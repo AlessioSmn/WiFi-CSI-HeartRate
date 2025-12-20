@@ -2,6 +2,8 @@ import csv
 import serial
 from io import StringIO
 
+from log import print_log, LVL_DBG, LVL_INF, LVL_ERR
+
 # Serial port number
 port = None
 
@@ -18,13 +20,11 @@ csv_len = 0
 # Current csv index
 csv_index = 0
 
-def csi_data_source_init(port, dbg_print: bool = False, from_ser: bool = True):
+def csi_data_source_init(port, from_ser: bool = True):
     """
     Initializes the source of the data (serial or csv)
     
     :param port: Serial port or csv filename
-    :param dbg_print: Indicates wheter to print debug information
-    :type dbg_print: bool
     :param from_ser: Indicates wheter to get data from serial or csv
     :type from_ser: bool
     """
@@ -35,15 +35,14 @@ def csi_data_source_init(port, dbg_print: bool = False, from_ser: bool = True):
     if from_serial:
         ser = serial.Serial(port=port, baudrate=921600,bytesize=8, parity='N', stopbits=1)
         if ser.isOpen():
-            print("Serial port opened successfully")
-            if dbg_print:
-                print(f"Port     = {port}")
-                print(f"Baudrate = {921600}")
-                print(f"Bytesize = {8}")
-                print(f"Parity   = {'N'}")
-                print(f"stopbits = {1}")
+            print_log("Serial port opened successfully", LVL_INF)
+            print_log(f"Port     = {port}", LVL_DBG)
+            print_log(f"Baudrate = {921600}", LVL_DBG)
+            print_log(f"Bytesize = {8}", LVL_DBG)
+            print_log(f"Parity   = {'N'}", LVL_DBG)
+            print_log(f"stopbits = {1}", LVL_DBG)
         else:
-            print("Open failed")
+            print("Serial port - Open failed", LVL_ERR)
             return -1
         
     else:
@@ -54,8 +53,7 @@ def csi_data_source_init(port, dbg_print: bool = False, from_ser: bool = True):
 
             csv_len = len(full_data)
                 
-            if dbg_print:
-                print(f"Lines read: {csv_len}")
+            print_log(f"CSV lines read: {csv_len}", LVL_DBG)
 
 def csi_data_source_close(dbg_print: bool = False):
     """
@@ -70,22 +68,23 @@ def csi_data_source_close(dbg_print: bool = False):
     if from_serial:
         ser.close()
         if dbg_print:
-            print("Serial closed successfully")
+            print_log("Serial closed successfully", LVL_INF)
 
 
-def get_csi_data(log_file_fd, dbg_print: bool = False):
+def get_csi_data():
     global from_serial, ser, csv_array, csv_index, csv_len
 
     if from_serial:
         strings = str(ser.readline())
         if not strings:
+            print_log("Received string is NULL", LVL_ERR)
             raise ValueError(-1)
+        
         strings = strings.lstrip('b\'').rstrip('\\r\\n\'')
         index = strings.find('CSI_DATA')
 
         if index == -1:
-            log_file_fd.write(strings + '\n')
-            log_file_fd.flush()
+            print_log("CSI_DATA field not found", LVL_ERR)
             raise ValueError(-1)
 
         csv_reader = csv.reader(StringIO(strings))
@@ -94,32 +93,23 @@ def get_csi_data(log_file_fd, dbg_print: bool = False):
     
     else:
 
-        if dbg_print:
-            print("get_csi_data - Reading line of index {0}".format(csv_index))
+        print_log(f"get_csi_data - Reading CSV line of index {csv_index}", LVL_DBG)
             
         # csi_cvs_row = csv_array[csv_index % csv_len]
         csi_cvs_row = csv_array[csv_index]
-
-        if dbg_print:
-            print(f"get_csi_data - Element count: {len(csi_cvs_row)}")
 
         # Suppose (hardcoded) 25 fields
         header_arr = csi_cvs_row[0:23]
         data_arr = csi_cvs_row[23:]
 
-        if dbg_print:
-            print(f"get_csi_data - Header fields: [{','.join(map(str, header_arr))}]")
+        print_log(f"get_csi_data - Header fields: [{','.join(map(str, header_arr))}]", LVL_DBG)
 
         # Format data array as string
         data_str = "[" + ",".join(map(str, data_arr)) + "]"
-        if dbg_print:
-            print(f"get_csi_data - Data string: {data_str}")
-
+        
         csi_data = ["CSI_DATA"] + header_arr + [data_str]
 
-        if dbg_print:
-            print(f"get_csi_data - Final array len: {len(csi_data)}")
-            print(f"get_csi_data - Final array: {",".join(map(str, csi_data))}")
+        print_log(f"get_csi_data - Final array len: {len(csi_data)}", LVL_DBG)
         
         csv_index += 1
         return csi_data

@@ -8,6 +8,7 @@ from multiprocessing import Process, Queue
 from csisource import csi_data_source_init, get_csi_data, csi_data_source_close
 from dsp import parse_csi_amplitudes, estimate_hr_freq
 from hrui import start_plotting, push_new_hr
+from log import print_log, set_print_level, LVL_DBG, LVL_INF, LVL_ERR, DebugLevel
 
 DATA_COLUMNS_NAMES_C5C6 = ["type", "id", "mac", "rssi", "rate","noise_floor","fft_gain","agc_gain", "channel", "local_timestamp",  "sig_len", "rx_state", "len", "first_word", "data"]
 
@@ -22,7 +23,22 @@ hr_estimates = None
 def Hz_to_BPM(hz: float) -> float:
     return hz * 60.0
 
-def monitor_hr(port: str, csv_writer, log_file_fd):
+def monitor_hr(
+        port: str,
+        from_serial: bool = True,
+        print_level: str = 'info'):
+    
+    if print_level not in ['debug', 'info', 'error']:
+        print("ERROR - print level not recognized. Should be one of 'debug', 'info', 'error'")
+        return -1
+    
+    level_map = {
+        'debug': DebugLevel.DEBUG,
+        'info': DebugLevel.INFO,
+        'error': DebugLevel.ERROR
+    }
+
+    set_print_level(level_map[print_level])
 
     LOG = True
 
@@ -59,7 +75,8 @@ def monitor_hr(port: str, csv_writer, log_file_fd):
     # Sliding window of csi data arrays
     csi_data_window = deque(maxlen=window_len)
  
-    csi_data_source_init(port=port, dbg_print=True, from_ser=False)
+    csi_data_source_init(port=port, from_ser=from_serial)
+    print_log("Source initiated", LVL_INF)
 
     # Start plottin HR data (separate process)
     hr_queue = Queue()
@@ -69,6 +86,7 @@ def monitor_hr(port: str, csv_writer, log_file_fd):
         daemon=True
     )
     ui_proc.start()
+    print_log("UI process started", LVL_INF)
 
     frame_num = 0
     
@@ -77,44 +95,43 @@ def monitor_hr(port: str, csv_writer, log_file_fd):
 
         # Get CSI data
         try:
-            csi_data = get_csi_data(log_file_fd)
+            csi_data = get_csi_data()
         except IndexError as ie:
             break
 
+        print_log("(main loop) - csi data received", LVL_DBG)
+
         # Ensure message length is recognized (among two standards)
         if len(csi_data) != len(DATA_COLUMNS_NAMES) and len(csi_data) != len(DATA_COLUMNS_NAMES_C5C6):
-            print(f"element number is not equal: {len(csi_data)} vs {len(DATA_COLUMNS_NAMES)}")
-            # print(csi_data)
-            log_file_fd.write("element number is not equal\n")
-            # log_file_fd.write(strings + '\n')
-            log_file_fd.flush()
+            print_log(f"(main loop) - Message length is not recognized", LVL_ERR)
+            print_log(f"(main loop) - Len = {len(csi_data)}, can be {len(DATA_COLUMNS_NAMES) } or {len(DATA_COLUMNS_NAMES_C5C6)}", LVL_ERR)
             continue
+
+        print_log("(main loop) - correct message length", LVL_DBG)
 
         # Load CSI Data array from string
         try:
             csi_raw_data = json.loads(csi_data[-1])
         except json.JSONDecodeError:
-            # print("data is incomplete")
-            log_file_fd.write("data is incomplete\n")
-            # log_file_fd.write(strings + '\n')
-            log_file_fd.flush()
+            print_log(f"(main loop) - Error in JSON.load(csi data)", LVL_ERR)
             continue
 
         # Ensure correct length
         csi_data_len = int (csi_data[-3])
         if csi_data_len != len(csi_raw_data):
-            # print("csi_data_len is not equal",csi_data_len,len(csi_raw_data))
-            log_file_fd.write("csi_data_len is not equal\n")
-            print(f"csi_data_len is not equal: csi_data_len={csi_data_len} , len(csi_raw_data)={len(csi_raw_data)}")
-            # log_file_fd.write(strings + '\n')
-            log_file_fd.flush()
+            print_log(f"(main loop) - Data length does not coincide", LVL_ERR)
+            print_log(f"(main loop) - Len is = {len(csi_raw_data)}, advertised as {csi_data_len}", LVL_ERR)
             continue
+        
+        print_log("(main loop) - correct data length", LVL_DBG)
 
         # Calculate amplitudes
         amplitudes = parse_csi_amplitudes(csi_data[24])
+        print_log("(main loop) - amplitudes calculated", LVL_DBG)
 
         # Add to array
         csi_data_window.append(amplitudes)
+        print_log("(main loop) - amplitudes appended list", LVL_DBG)
 
         # If sufficient iteration reached, process the current matrix
         if iter >= iter_per_estimate:
@@ -134,6 +151,11 @@ def monitor_hr(port: str, csv_writer, log_file_fd):
                 par_bp_hr_allowance=BP_hr_all,
                 par_sg_order=SG_polyorder,
                 par_sg_winlen=SG_winlen)
+            
+            # Convert to BPM
+            hr_bpm = Hz_to_BPM(hr_hz)
+            
+            print_log(f"(main loop) - Heart rate estimated: {hr_bpm:.2f}", LVL_INF)
             
             # Append to array (in BPM)
             hr_queue.put(Hz_to_BPM(hr_hz))
@@ -164,4 +186,6 @@ def monitor_hr(port: str, csv_writer, log_file_fd):
 
     # Close the source
     csi_data_source_close()
+    print_log("Source closed", LVL_INF)
+
     return
