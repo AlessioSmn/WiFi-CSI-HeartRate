@@ -8,3 +8,6 @@
 
 # CSV files
 *.csv
+
+# Debug images
+./img/*

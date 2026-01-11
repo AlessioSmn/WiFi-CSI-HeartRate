@@ -1,7 +1,99 @@
+import os
 import ast
+import time
 import numpy as np
-from scipy.signal import butter, filtfilt, savgol_filter
+import matplotlib.pyplot as plt
 from scipy.fft import rfft, rfftfreq
+from scipy.signal import butter, filtfilt, savgol_filter, find_peaks, welch
+
+## DEBUGGING
+
+def save_spectrum(signal, fs, chan_idx, stage, kind="fft", timestamp=0):
+    N = len(signal)
+
+    plt.figure()
+
+    if kind == "fft":
+        fft_vals = np.fft.rfft(signal)
+        freqs = np.fft.rfftfreq(N, d=1/fs)
+        mag = np.abs(fft_vals) / N
+        plt.plot(freqs, mag)
+        ylabel = "Amplitude"
+
+    elif kind == "psd":
+        nperseg = min(1024, len(signal))
+        freqs, psd = welch(signal, fs=fs, nperseg=nperseg)
+
+        if np.all(psd <= 0):
+            plt.plot(freqs, psd)
+            ylabel = "PSD (zero)"
+        else:
+            plt.semilogy(freqs, psd)
+            ylabel = "PSD [V²/Hz]"
+
+    else:
+        return
+
+    plt.xlabel("Frequency [Hz]")
+    plt.ylabel(ylabel)
+    plt.xlim(0, 5)
+
+    # Vertical light-gray lines every 0.5 Hz
+    for x in np.arange(0.5, 5.0, 0.5):
+        plt.axvline(x, color="0.85", linewidth=0.8)
+
+    plt.grid(True, axis="y")
+
+    fname = f"./img/{stage}/{kind}/{timestamp}_chan{chan_idx}_{stage}_{kind}.jpg"
+    plt.savefig(fname, dpi=150, bbox_inches="tight")
+    plt.close()
+
+def debug_spectrums(original_matrix, processed_matrix, fs, top_idx=None):
+
+    os.makedirs("./img", exist_ok=True)
+    os.makedirs("./img/proc", exist_ok=True)
+    os.makedirs("./img/proc/fft", exist_ok=True)
+    os.makedirs("./img/proc/psd", exist_ok=True)
+    os.makedirs("./img/raw", exist_ok=True)
+    os.makedirs("./img/raw/fft", exist_ok=True)
+    os.makedirs("./img/raw/psd", exist_ok=True)
+    timestamp = int(time.time())
+
+    original_matrix = np.asarray(original_matrix)
+    processed_matrix = np.asarray(processed_matrix)
+
+    _, channels = original_matrix.shape
+
+    if top_idx is None:
+        chan_list = range(channels)
+    else:
+        chan_list = top_idx
+
+    log_path = f"./img/log_{timestamp}.txt"
+    with open(log_path, "w") as f:
+        f.write("channel_idx,power_raw,power_proc\n")
+
+        for i in chan_list:
+            raw = original_matrix[:, i]
+            proc = processed_matrix[:, i]
+
+            # Spettri RAW
+            save_spectrum(raw, fs, i, stage="raw", kind="fft", timestamp=timestamp)
+            save_spectrum(raw, fs, i, stage="raw", kind="psd", timestamp=timestamp)
+
+            # Spettri PROCESSED
+            save_spectrum(proc, fs, i, stage="proc", kind="fft", timestamp=timestamp)
+            save_spectrum(proc, fs, i, stage="proc", kind="psd", timestamp=timestamp)
+
+            power_raw = float(np.mean(raw ** 2))
+            power_proc = float(np.mean(proc ** 2))
+
+            f.write(f"{i},{power_raw:.6e},{power_proc:.6e}\n")
+
+    print(f"[DEBUG] Spectrums saved in ./img/**")
+    print(f"[DEBUG] Log: {log_path}")
+
+
 
 def parse_csi_amplitudes(csi_str):
     """
@@ -31,7 +123,8 @@ def butter_bandpass_filter(
         lowcut: float,
         highcut: float,
         fs: float,
-        order: int = 3) -> np.ndarray:
+        order: int = 3
+    ) -> np.ndarray:
     """
     Pulse Extraction: 3rd-order Butterworth bandpass (default order=3).
     Uses zero-phase filtering (filtfilt).
@@ -52,7 +145,8 @@ def butter_bandpass_filter(
 def savitzky_golay_smooth(
         signal: np.ndarray,
         window_length: int = 15,
-        polyorder: int = 3) -> np.ndarray:
+        polyorder: int = 3
+    ) -> np.ndarray:
     """
     Pulse Shaping: Savitzky-Golay smoothing (preserve waveform shape).
     Ensures window_length is odd and less than signal length.
@@ -129,6 +223,78 @@ def dominant_frequency(
     # Return dominant frequency
     return freq_band[np.argmax(fft_band)]
 
+def dominant_wide_frequency(
+        signal: np.ndarray,
+        lowcut: float,
+        highcut: float,
+        fs: float,
+        min_bw_hz: float = 0.0
+    ) -> float:
+    """
+    Compute the dominant frequency of a real-valued signal within a specified frequency band,
+    using integrated energy over bandwidth to penalize narrow spurious peaks.
+
+    :param signal: Input time-domain signal (1D array of samples).
+    :type signal: np.ndarray
+    :param lowcut: Lower bound of the frequency band (Hz). Frequencies below this are ignored.
+    :type lowcut: float
+    :param highcut: Upper bound of the frequency band (Hz). Frequencies above this are ignored.
+    :type highcut: float
+    :param fs: Sampling frequency of the signal (Hz).
+    :type fs: float
+    :param min_bw_hz: Minimum bandwidth (Hz) required to consider a peak valid.
+    :type min_bw_hz: float
+    :return: Dominant frequency (Hz) within the specified band.
+    :rtype: float
+    """
+
+    # === Step 0: Calculate number of samples
+    samples = len(signal)
+
+    # === Step 1: Frequency axis
+    freqs = rfftfreq(samples, d=1/fs)
+
+    # Mask frequency band
+    mask = (freqs >= lowcut) & (freqs <= highcut)
+    freq_band = freqs[mask]
+
+    # === Step 2: FFT magnitude
+    fft_vals = np.abs(rfft(signal))
+    fft_band = fft_vals[mask]
+
+    # Fallback: identical to classic version
+    if min_bw_hz <= 0:
+        return freq_band[np.argmax(fft_band)]
+
+    # Frequency resolution
+    df = freq_band[1] - freq_band[0]
+
+    # Sort indices by descending amplitude
+    sorted_idx = np.argsort(fft_band)[::-1]
+
+    # === Step 3: Reject only too-narrow peaks
+    for i in sorted_idx:
+        peak_val = fft_band[i]
+        thresh = 0.5 * peak_val   # -6 dB
+
+        # Left bound
+        l = i
+        while l > 0 and fft_band[l] > thresh:
+            l -= 1
+
+        # Right bound
+        r = i
+        while r < len(fft_band) - 1 and fft_band[r] > thresh:
+            r += 1
+
+        bandwidth = (r - l) * df
+        if bandwidth >= min_bw_hz:
+            return freq_band[i]
+
+    # Fallback: highest peak
+    return freq_band[np.argmax(fft_band)]
+
+
 def estimate_hr_freq(
         signal_matrix: list[list[float]],
         fs: float,
@@ -139,7 +305,8 @@ def estimate_hr_freq(
         par_bp_order: int = 2,
         par_bp_hr_allowance: float = 0.5,
         par_sg_order: int = 2,
-        par_sg_winlen: int = 11) -> float:
+        par_sg_winlen: int = 11
+    ) -> float:
     
     """
     Estimate the heart rate (HR) from multi-channel CSI amplitude data.
@@ -177,6 +344,7 @@ def estimate_hr_freq(
     :return: Estimated heart rate in Hertz, averaged over selected channels.
     :rtype: float
     """
+    DEBUG_ON = False
 
     hr_min_Hz = hr_min / 60.0
     hr_max_Hz = hr_max / 60.0
@@ -220,6 +388,15 @@ def estimate_hr_freq(
     # Select top_carriers channels by power
     top_idx = np.argsort(channel_power)[-top_carriers:]
     strong_signal_matrix = processed_channels[:, top_idx]
+        
+    # DEBUG
+    if DEBUG_ON:
+        debug_spectrums(
+            original_matrix=signal_matrix,
+            processed_matrix=processed_channels,
+            fs=fs,
+            top_idx=top_idx
+        )
     
     hr_hz_estimates = []
 
@@ -227,11 +404,12 @@ def estimate_hr_freq(
     for chan in strong_signal_matrix.T:
 
         # Extract dominant frequency via FFT
-        dominant_freq = dominant_frequency(
+        dominant_freq = dominant_wide_frequency(
             signal=chan,
             lowcut=hr_min_Hz,
             highcut=hr_max_Hz,
-            fs=fs
+            fs=fs,
+            min_bw_hz=0.1
         )
 
         hr_hz_estimates.append(dominant_freq)
@@ -248,114 +426,3 @@ def estimate_hr_freq(
         res = np.median(hr_hz_estimates)
         
     return res
-
-
-def estimate_hr(
-        signal_matrix: list[list[float]],
-        fs: float,
-        top_carriers: int = 10,
-        hr_min: float = 45,
-        hr_max: float = 200,
-        par_bp_order: int = 2,
-        par_bp_hr_allowance: float = 0.5,
-        par_sg_order: int = 2,
-        par_sg_winlen: int = 11) -> float:
-    
-    """
-    Estimate the heart rate (HR) from multi-channel CSI amplitude data.
-
-    The function performs the following steps:
-    1. Band-pass filtering of each channel within an extended HR range.
-    2. Savitzky-Golay smoothing to reduce noise while preserving waveform shape.
-    3. Selection of the top channels based on signal power.
-    4. Extraction of the dominant frequency for each selected channel.
-    5. Calculation of HR in beats per minute (BPM) as the mean of selected channels.
-
-    :param signal_matrix: 2D array of CSI amplitudes, shape (samples, subcarriers). 
-                          Each row corresponds to a time sample, each column to a subcarrier.
-    :type signal_matrix: list[list[float]]
-    :param fs: Sampling frequency of the signal in Hz.
-    :type fs: float
-    :param top_carriers: Number of strongest subcarriers to use for HR estimation. 
-                         Default is 10.
-    :type top_carriers: int
-    :param hr_min: Minimum expected heart rate in BPM. Default is 45 BPM.
-    :type hr_min: float
-    :param hr_max: Maximum expected heart rate in BPM. Default is 200 BPM.
-    :type hr_max: float
-    :param par_bp_order: order of Butterworth bandpass filter. Default is 2.
-    :type par_bp_order: int
-    :param par_bp_hr_allowance:  hertz of additional allowance of Butterworth bandpass filter. Default is 0.5 Hertz.
-    :type par_bp_hr_allowance: float
-    :param par_sg_order: polyorder of Saviztky-Golay filter. Default is 11.
-    :type par_sg_order: int
-    :param par_sg_winlen: window length of Saviztky-Golay filter. Default is 2.
-    :type par_sg_winlen: int
-    :return: Estimated heart rate in beats per minute (BPM), averaged over selected channels.
-    :rtype: float
-    """
-
-    hr_min_Hz = hr_min / 60.0
-    hr_max_Hz = hr_max / 60.0
-    hr_allowance = 0.5 # Hertz
-
-    # Convert to numpy
-    signal_matrix = np.array(signal_matrix)
-    samples, channels = signal_matrix.shape
-
-    # Store processed channels and their powers
-    processed_channels = []
-    channel_power = []
-
-    # Process each channel
-    for chan in signal_matrix.T:
-
-        # Band-pass
-        chan = butter_bandpass_filter(
-            signal=chan,
-            fs=fs,
-            lowcut=hr_min_Hz - par_bp_hr_allowance,
-            highcut=hr_max_Hz + par_bp_hr_allowance,
-            order=par_bp_order
-        )
-
-        # Savitzky-Golay smoothing
-        chan = savitzky_golay_smooth(
-            signal=chan,
-            window_length=par_sg_winlen,
-            polyorder=par_sg_order
-        )
-
-        # Store filtered channel
-        processed_channels.append(chan)
-
-        # Power for selection
-        channel_power.append(np.mean(chan**2))
-
-    # Convert back to np array
-    processed_channels = np.array(processed_channels).T
-
-    # Select top_carriers channels by power
-    top_idx = np.argsort(channel_power)[-top_carriers:]
-    strong_signal_matrix = processed_channels[:, top_idx]
-    
-    bpm_estimate = []
-
-    # Compute HR per selected channel
-    for chan in strong_signal_matrix.T:
-
-        # Extract dominant frequency via FFT
-        dominant_freq = dominant_frequency(
-            signal=chan,
-            lowcut=hr_min_Hz,
-            highcut=hr_max_Hz,
-            fs=fs
-        )
-        hr_bpm = dominant_freq * 60
-        bpm_estimate.append(hr_bpm)
-
-    # Return the mean HR
-    mn = np.mean(bpm_estimate)
-    md = np.median(bpm_estimate)
-    return mn, md
-

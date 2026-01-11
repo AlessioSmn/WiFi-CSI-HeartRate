@@ -91,7 +91,7 @@ def plot_hr(frame_idx):
 
     # Update big HR text outside the plot
     if len(hr_estimates) > 0:
-        hr_text.set_text(f"{int(hr_estimates[-1])}\nBPM")
+        hr_text.set_text(f"{int(hr_estimates[-1])}\nBPM\n{(hr_estimates[-1]/60.0):.2f}\nHz")
     else:
         hr_text.set_text("--")
 

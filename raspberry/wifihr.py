@@ -46,13 +46,13 @@ def monitor_hr(
 
     BP_order = 3
     BP_hr_all = 0.0
-    SG_polyorder = 2
+    SG_polyorder = 3
     SG_winlen = 11
     TOP_carr = 15
     HR_MIN = 45
     HR_MAX = 200
-    window_len = 600 # TODO tuning
-    iter_per_estimate = 10 # If equal to sampling frequency it means an estimate for second
+    window_len = 500 # TODO tuning
+    iter_per_estimate = 20 # If equal to sampling frequency it means an estimate for second
     
     if LOG:
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -143,7 +143,7 @@ def monitor_hr(
             hr_hz = estimate_hr_freq(
                 signal_matrix=csi_data_window,
                 fs=sampling_freq,
-                top_carriers=10,
+                top_carriers=TOP_carr,
                 aggr_method='mean',
                 hr_min=HR_MIN,
                 hr_max=HR_MAX,
@@ -155,12 +155,12 @@ def monitor_hr(
             # Convert to BPM
             hr_bpm = Hz_to_BPM(hr_hz)
             
-            print_log(f"(main loop) - Heart rate estimated: {hr_bpm:.2f}", LVL_INF)
+            print_log(f"(main loop) - Heart rate estimated: {hr_bpm:.2f} ({hr_hz:.3f})", LVL_INF)
             
             # Append to array (in BPM)
             hr_queue.put(Hz_to_BPM(hr_hz))
 
-            push_new_hr(Hz_to_BPM(hr_hz))
+            # push_new_hr(Hz_to_BPM(hr_hz))
 
             if LOG:
                 # Estimate also median heart rate
