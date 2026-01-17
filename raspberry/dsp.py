@@ -3,6 +3,7 @@ import ast
 import time
 import numpy as np
 import matplotlib.pyplot as plt
+from multiprocessing import Queue
 from scipy.fft import rfft, rfftfreq
 from scipy.signal import butter, filtfilt, savgol_filter, find_peaks, welch
 
@@ -95,18 +96,16 @@ def debug_spectrums(original_matrix, processed_matrix, fs, top_idx=None):
 
 
 
-def parse_csi_amplitudes(csi_str):
+def parse_csi_amplitudes(values):
     """
     Given an array of (re, im) values, ordered in a single string array, 
     returns an array with the relative amplitudes
     
-    :param csi_str: Array of (re, im)
+    :param values: Array of (re, im)
 
     :return: Array of amplitudes
     :rtype: Literal[-1] | None
     """
-    # Convert the string into a Python list of ints
-    values = ast.literal_eval(csi_str)
 
     # Reshape into (imag, real) pairs
     complex_pairs = np.array(values).reshape(-1, 2)
@@ -302,10 +301,10 @@ def estimate_hr_freq(
         aggr_method: str = 'mean',
         hr_min: float = 45,
         hr_max: float = 200,
-        par_bp_order: int = 2,
+        par_bp_order: int = 3,
         par_bp_hr_allowance: float = 0.5,
-        par_sg_order: int = 2,
-        par_sg_winlen: int = 11
+        par_sg_order: int = 3,
+        par_sg_winlen: int = 15
     ) -> float:
     
     """
@@ -409,7 +408,7 @@ def estimate_hr_freq(
             lowcut=hr_min_Hz,
             highcut=hr_max_Hz,
             fs=fs,
-            min_bw_hz=0.1
+            min_bw_hz=0.025
         )
 
         hr_hz_estimates.append(dominant_freq)
@@ -426,3 +425,38 @@ def estimate_hr_freq(
         res = np.median(hr_hz_estimates)
         
     return res
+
+
+def dsp_process(csi_data_queue: Queue, result_queue: Queue):
+    
+    sampling_freq = 40 # Hertz
+
+    BP_order = 3
+    BP_hr_all = 0.01
+    SG_polyorder = 3
+    SG_winlen = 13
+    TOP_carr = 10
+    HR_MIN = 45
+    HR_MAX = 200
+
+    while True:
+        # Blocking get on data queue (csi_data_queue)
+        csi_data_window = csi_data_queue.get(block=True)
+        
+        # Estimate heart rate
+        hr_hz = estimate_hr_freq(
+            signal_matrix=csi_data_window,
+            fs=sampling_freq,
+            top_carriers=TOP_carr,
+            aggr_method='mean',
+            hr_min=HR_MIN,
+            hr_max=HR_MAX,
+            par_bp_order=BP_order,
+            par_bp_hr_allowance=BP_hr_all,
+            par_sg_order=SG_polyorder,
+            par_sg_winlen=SG_winlen
+        )
+
+        # Put result in result queue
+        result_queue.put(hr_hz)
+        

@@ -1,4 +1,5 @@
 import csv
+import ast
 import serial
 from io import StringIO
 from collections import deque
@@ -76,21 +77,23 @@ def get_csi_data():
     global from_serial, ser, csv_array, csv_index, csv_len
 
     if from_serial:
-        strings = str(ser.readline())
-        if not strings:
-            print_log("Received string is NULL", LVL_ERR)
-            raise ValueError(-1)
+        line = ser.readline().decode("utf-8", errors="ignore").strip()
         
-        strings = strings.lstrip('b\'').rstrip('\\r\\n\'')
-        index = strings.find('CSI_DATA')
-
-        if index == -1:
-            print_log("CSI_DATA field not found", LVL_ERR)
+        if "CSI_DATA" not in line:
             raise ValueError(-2)
+        
+        head, tail = line.rsplit(',"', 1)
+        fields = head.split(',')
 
-        csv_reader = csv.reader(StringIO(strings))
-        csi_data = next(csv_reader)
-        return csi_data
+        try:
+            data_arr = ast.literal_eval(tail[:-1])
+        except SyntaxError as se:
+            print(line)
+            return fields
+        
+        fields.append(data_arr)
+
+        return fields
     
     else:
 
@@ -101,14 +104,13 @@ def get_csi_data():
 
         # Suppose (hardcoded) 25 fields
         header_arr = csi_cvs_row[0:23]
-        data_arr = csi_cvs_row[23:]
+        
+        # Convert data fields to int
+        data_arr = [int(x) for x in csi_cvs_row[23:]]
 
         print_log(f"get_csi_data - Header fields: [{','.join(map(str, header_arr))}]", LVL_DBG)
-
-        # Format data array as string
-        data_str = "[" + ",".join(map(str, data_arr)) + "]"
         
-        csi_data = ["CSI_DATA"] + header_arr + [data_str]
+        csi_data = ["CSI_DATA"] + header_arr + [data_arr]
 
         print_log(f"get_csi_data - Final array len: {len(csi_data)}", LVL_DBG)
         
