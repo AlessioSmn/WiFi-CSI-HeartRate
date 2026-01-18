@@ -9,5 +9,11 @@
 # CSV files
 *.csv
 
+# Log files
+*.log
+
 # Debug images
 ./img/*
+
+# ESP build folders
+./esp/**/build/
