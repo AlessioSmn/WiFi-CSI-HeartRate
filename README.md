@@ -7,6 +7,15 @@ Raspberry Pi 3 Model B+
 
 ESP-WROOM-32 (x2)
 ## Deployment
+### TODO CHANGE
+sudo nano /boot/firmware/config.txt
+
+enable_uart=1
+dtoverlay=disable-bt
+
+sudo reboot
+
+
 ### Raspberry
 ```bash
 USR> python ./raspberry/main.py
