@@ -1,12 +1,24 @@
+#region ======= Imports =======
+
 import os
-import ast
 import time
 import numpy as np
+from mpque import MPDeque
 import matplotlib.pyplot as plt
 from scipy.fft import rfft, rfftfreq
+from log import print_log, LVL_DBG, LVL_INF, LVL_ERR, DebugLevel
 from scipy.signal import butter, filtfilt, savgol_filter, find_peaks, welch
 
-## DEBUGGING
+#endregion
+
+#region ======= Debug and utility function =======
+
+def Hz_to_BPM(hz: float) -> float:
+    return hz * 60.0
+
+def print_log_loc(s: str, log_level: DebugLevel = DebugLevel.INFO):
+    s_loc = f"[DSP ] {s}"
+    print_log(s_loc, log_level)
 
 def save_spectrum(signal, fs, chan_idx, stage, kind="fft", timestamp=0):
     N = len(signal)
@@ -93,20 +105,84 @@ def debug_spectrums(original_matrix, processed_matrix, fs, top_idx=None):
     print(f"[DEBUG] Spectrums saved in ./img/**")
     print(f"[DEBUG] Log: {log_path}")
 
+#endregion
 
+#region ======= Parameters =======
 
-def parse_csi_amplitudes(csi_str):
+# Sampling frequency
+PAR_SAMP_FREQ_HZ = 40
+
+# Aggregation method
+PAR__AGGR_METHOD = 'mean'
+
+# Bandpass filter order
+PAR__BP_ORDER = 3
+
+# Bandpass filter extra margin
+PAR__BP_ALLOW_HZ = 0.01
+
+# Savitzky-Golay polynomial order
+PAR__SG_POLYORDER = 4
+
+# Savitzky-Golay window length
+PAR__SG_WINLEN = 15
+
+# Number of carriers to use (by power in band)
+PAR__TOP_CARRIERS = 15
+
+# Minimum HR
+PAR__HR_MIN_BPM = 45
+
+# Maximum HR
+PAR__HR_MAX_BPM = 200
+
+# Minimum width for a peak to be selected (after FFT)
+PAR__FT_BAND_WIDTH = 0.1 # Hz
+
+# Percentage of peak power
+PAR__FT_BAND_THRESH = 0.5
+
+#endregion
+
+#region ======= CSI Data functions =======
+
+def resample_window(csi_data_window_counters):
     """
-    Given an array of (re, im) values, ordered in a single string array, 
-    returns an array with the relative amplitudes
-    
-    :param csi_str: Array of (re, im)
-
-    :return: Array of amplitudes
-    :rtype: Literal[-1] | None
+    TODO
     """
-    # Convert the string into a Python list of ints
-    values = ast.literal_eval(csi_str)
+
+    counters = np.array([x[0] for x in csi_data_window_counters])
+    signals  = np.array([x[1] for x in csi_data_window_counters])
+
+    full_counters = np.arange(
+        counters[0],
+        counters[-1] + 1
+    )
+
+    n_samples = len(full_counters)
+    n_subcarr = signals.shape[1]
+
+    rebuilt = np.zeros((n_samples, n_subcarr))
+
+    for ch in range(n_subcarr):
+        rebuilt[:, ch] = np.interp(
+            full_counters,
+            counters,
+            signals[:, ch]
+        )
+
+    return rebuilt
+
+def parse_csi_amplitudes(values):
+    """
+    Given a flat list of ints [re0, im0, re1, im1, ...],
+    returns a numpy array of amplitudes.
+
+    :param values: list of ints
+    :return: numpy array of amplitudes
+    """
+    if len(values) % 2 != 0:
+        raise ValueError("CSI values must have even length (pairs of re/im)")
 
     # Reshape into (imag, real) pairs
     complex_pairs = np.array(values).reshape(-1, 2)
@@ -117,6 +193,10 @@ def parse_csi_amplitudes(csi_str):
     # Compute amplitudes
     amplitudes = np.abs(csi_complex)
     return amplitudes
+
+#endregion
+
+#region ======= DSP functions (single step) =======
 
 def butter_bandpass_filter(
         signal: np.ndarray,
@@ -228,7 +308,8 @@ def dominant_wide_frequency(
         lowcut: float,
         highcut: float,
         fs: float,
-        min_bw_hz: float = 0.0
+        min_bw_hz: float = 0.0,
+        threshold: float = 0.5
     ) -> float:
     """
     Compute the dominant frequency of a real-valued signal within a specified frequency band,
@@ -244,6 +325,8 @@ def dominant_wide_frequency(
     :type fs: float
     :param min_bw_hz: Minimum bandwidth (Hz) required to consider a peak valid.
     :type min_bw_hz: float
+    :param threshold: Percentage of the peak power to be considered the same band.
+    :type threshold: float
     :return: Dominant frequency (Hz) within the specified band.
     :rtype: float
     """
@@ -294,6 +377,9 @@ def dominant_wide_frequency(
     # Fallback: highest peak
     return freq_band[np.argmax(fft_band)]
 
+#endregion
+
+#region ======= Main function =======
 
 def estimate_hr_freq(
         signal_matrix: list[list[float]],
@@ -302,10 +388,12 @@ def estimate_hr_freq(
         aggr_method: str = 'mean',
         hr_min: float = 45,
         hr_max: float = 200,
-        par_bp_order: int = 2,
-        par_bp_hr_allowance: float = 0.5,
-        par_sg_order: int = 2,
-        par_sg_winlen: int = 11
+        par_bp_order: int = 3,
+        par_bp_hr_allowance: float = 0.2,
+        par_sg_order: int = 3,
+        par_sg_winlen: int = 15,
+        par_ft_band: float = 0.1,
+        par_ft_thresh: float = 0.5
     ) -> float:
     
     """
@@ -333,14 +421,18 @@ def estimate_hr_freq(
     :type hr_min: float
     :param hr_max: Maximum expected heart rate in BPM. Default is 200 BPM.
     :type hr_max: float
-    :param par_bp_order: order of Butterworth bandpass filter. Default is 2.
+    :param par_bp_order: order of Butterworth bandpass filter. Default is 3.
     :type par_bp_order: int
-    :param par_bp_hr_allowance:  hertz of additional allowance of Butterworth bandpass filter. Default is 0.5 Hertz.
+    :param par_bp_hr_allowance:  hertz of additional allowance of Butterworth bandpass filter. Default is 0.2 Hertz.
     :type par_bp_hr_allowance: float
-    :param par_sg_order: polyorder of Saviztky-Golay filter. Default is 11.
+    :param par_sg_order: polyorder of Saviztky-Golay filter. Default is 15.
     :type par_sg_order: int
-    :param par_sg_winlen: window length of Saviztky-Golay filter. Default is 2.
+    :param par_sg_winlen: window length of Saviztky-Golay filter. Default is 3.
     :type par_sg_winlen: int
+    :param par_ft_band: Minimum bandwidth to select a peak. Default is 0.1 Hz
+    :type par_ft_band: float
+    :param par_ft_thresh: Percentage of the peak power to be considered in the same band. Default is 0.5 (50%)
+    :type par_ft_thresh: float
     :return: Estimated heart rate in Hertz, averaged over selected channels.
     :rtype: float
     """
@@ -386,6 +478,7 @@ def estimate_hr_freq(
     processed_channels = np.array(processed_channels).T
 
     # Select top_carriers channels by power
+    top_carriers = min(top_carriers, len(channel_power))
     top_idx = np.argsort(channel_power)[-top_carriers:]
     strong_signal_matrix = processed_channels[:, top_idx]
         
@@ -409,7 +502,8 @@ def estimate_hr_freq(
             lowcut=hr_min_Hz,
             highcut=hr_max_Hz,
             fs=fs,
-            min_bw_hz=0.1
+            min_bw_hz=par_ft_band,
+            threshold=par_ft_thresh
         )
 
         hr_hz_estimates.append(dominant_freq)
@@ -426,3 +520,64 @@ def estimate_hr_freq(
         res = np.median(hr_hz_estimates)
         
     return res
+
+#endregion
+
+#region ======= DSP process =======
+
+def PROC_DSP(mpdeque_dsp: MPDeque, mpdeque_hr: MPDeque, log_to_file: bool = False, log_filename: str = "log.log"):
+
+    print_log_loc("Process alive", LVL_INF)
+    
+    if log_to_file:
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with open(log_filename, "a") as f:
+            f.write(f"\n[{timestamp}] NEW SESSION\n")
+            f.write(" --- Parameters:\n")
+            # f.write(f"Sample window length = [{window_len}]\n")
+            # f.write(f"Iterations per estimate = [{iter_per_estimate}]\n")
+            f.write(f"Bandpass - Order = [{PAR__BP_ORDER}]\n")
+            f.write(f"Bandpass - HR allowance = [{PAR__BP_ALLOW_HZ}] (Hertz)\n")
+            f.write(f"Savitzky-Golay - Polyomial order = [{PAR__SG_POLYORDER}]\n")
+            f.write(f"Savitzky-Golay - Window length = [{PAR__SG_WINLEN}]\n")
+            f.write(f"FFT - Peak band = [{PAR__FT_BAND_WIDTH}]\n")
+            f.write(f"FFT - Band threshold = [{PAR__FT_BAND_WIDTH}]\n")
+            f.write(f"HR Min = [{PAR__HR_MIN_BPM}]\n")
+            f.write(f"HR Max = [{PAR__HR_MAX_BPM}]\n")
+            f.write(f"Top carriers = [{PAR__TOP_CARRIERS}]\n")
+            f.write(f"Aggregation method = [{PAR__AGGR_METHOD}]\n")
+            f.write(" --- Results: (BPM / Hz)\n")
+
+    while True:
+
+        # Get csi data window
+        csi_data_window = mpdeque_dsp.popright(block=True)
+
+        print_log_loc("Processing csi data window", LVL_DBG)
+
+        # Estimate HR
+        hr_hz = estimate_hr_freq(
+            signal_matrix=csi_data_window,
+            fs=PAR_SAMP_FREQ_HZ,
+            top_carriers=PAR__TOP_CARRIERS,
+            aggr_method=PAR__AGGR_METHOD,
+            hr_min=PAR__HR_MIN_BPM,
+            hr_max=PAR__HR_MAX_BPM,
+            par_bp_order=PAR__BP_ORDER,
+            par_bp_hr_allowance=PAR__BP_ALLOW_HZ,
+            par_sg_order=PAR__SG_POLYORDER,
+            par_sg_winlen=PAR__SG_WINLEN,
+            par_ft_band=PAR__FT_BAND_WIDTH,
+            par_ft_thresh=PAR__FT_BAND_THRESH
+        )
+
+        # Enqueue
+        mpdeque_hr.appendleft(hr_hz)
+
+        print_log_loc("Estimate calculated and returned", LVL_DBG)
+
+        if log_to_file:
+            with open(log_filename, "a") as f:
+                f.write(f"{Hz_to_BPM(hr_hz):.2f} BPM / {hr_hz:.3f} Hz\n")
+
+#endregion

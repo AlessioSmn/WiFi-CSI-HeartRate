@@ -11,10 +11,10 @@ if __name__ == '__main__':
      - from serial (COM3), debug level DEBUG
         python main.py -p COM3 -d debug
     
-     - from csv (file.csv), debug level default (INFO)
-        python main.py -p file.csv --csv
-    
      - from csv (file.csv), debug level DEBUG
+        python main.py -p file.csv --csv -d debug
+    
+     - from csv (file.csv), debug level DEBUG, with log and with ui
         python main.py -p file.csv --csv -d debug
     """
     
@@ -46,12 +46,26 @@ if __name__ == '__main__':
         help="Print level"
     )
 
+    parser.add_argument(
+        '-l', '--log',
+        dest='log_filename',
+        help="Log file name"
+    )
+
+    parser.add_argument(
+        '-u', '--ui',
+        dest='start_ui',
+        action='store_true',
+        help="Starts UI process if specified"
+    )
+
+
     args = parser.parse_args()
 
     monitor_hr(
         port=args.port,
         from_serial=args.from_serial,
-        print_level=args.print_level
+        print_level=args.print_level,
+        start_ui_proc=args.start_ui,
+        log_filename=args.log_filename
     )
-    
-    print("Bye bye")
