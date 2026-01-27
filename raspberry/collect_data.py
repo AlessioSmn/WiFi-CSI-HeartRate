@@ -1,0 +1,147 @@
+import sys
+import os
+import csv
+import json
+import argparse
+import numpy as np
+import serial
+from io import StringIO
+import ast
+from scipy.signal import butter, filtfilt, savgol_filter
+from typing import List, Tuple, Optional, Dict, Any
+import tensorflow as tf
+from tensorflow import keras
+import numpy as np
+import pandas as pd
+
+ACCEPTED_HR_RANGE = [80, 200]
+ACCEPTED_IR_RANGE = [100000, 120000]
+DATA_COLUMNS_NAMES = ["type", "id", "mac", "rssi", "rate", "sig_mode", "mcs", "bandwidth", "smoothing", "not_sounding", "aggregation", "stbc", "fec_coding",
+                      "sgi", "noise_floor", "ampdu_cnt", "channel", "secondary_channel", "local_timestamp", "ant", "sig_len", "rx_state", "len", "first_word", "data"]
+HR_COLUMNS_NAMES = ["IR", "BPM", "AVG BPM"]
+
+
+def parse_csi_line(line, cols):
+    result = None
+    try:
+        result = pd.read_csv(
+            StringIO(line),
+            names=cols,
+            quotechar='"'
+        )
+    except pd.errors.ParserError:
+        result = None
+    return result
+
+def iterate_data_rcv(ser, ser_hr, ir_range, avg_bpm_range, print_bpm=False):
+    strings = str(ser.readline())
+    string_hr = None
+    if ser_hr is not None:
+        string_hr = str(ser_hr.readline())
+    if not strings:
+        print("no string from csi port")
+        return None, None, None
+    if not string_hr and ser_hr is not None:
+        print("no string from hr port")
+        return None, None, None
+    strings = strings.lstrip('b\'').rstrip('\\r\\n\'')
+
+    if ser_hr is not None:
+        string_hr = string_hr.lstrip('b\'').rstrip('\\r\\n\'')
+        split_hr = string_hr.split(",")
+        avg_bpm_str = split_hr[2]
+        ir = split_hr[0]
+        if not ir.isdigit():
+            print(f"no ir: {ir}")
+            return False, None, None
+        if not avg_bpm_str.isdigit():
+            print(f"no hr: {avg_bpm_str}")
+            return False, None, None
+        ir_int = int(ir)
+        avg_bpm = avg_bpm_str
+        avg_bpm_int = int(avg_bpm)
+        if ir_int < ir_range[0] or ir_int > ir_range[1]:
+            print(f"invalid ir: {ir_int}")
+            return False, None, None
+        if avg_bpm_int < avg_bpm_range[0] or avg_bpm_int > avg_bpm_range[1]:
+            print(f"invalid hr: {avg_bpm_int}")
+            return False, None, None
+        
+        if print_bpm:
+            print(f"Current bpm: {avg_bpm}")
+    return True, strings, string_hr
+
+
+def from_buffer_to_df(buffer_csi, buffer_hr, cols_csi, cols_hr):
+    df_csi = pd.DataFrame(columns=cols_csi)
+    df_hr = pd.DataFrame(columns=cols_hr)
+    for line_csi, line_hr in zip(buffer_csi, buffer_hr):
+        result_csi = parse_csi_line(line_csi, cols_csi)
+        result_hr = parse_csi_line(line_hr, cols_hr)
+        if result_csi is None or result_hr is None:
+            continue
+        df_csi = pd.concat([df_csi] + [result_csi], ignore_index=True)
+        df_hr = pd.concat([df_hr] + [result_hr], ignore_index=True)
+    
+    df = pd.concat([df_csi.reset_index(drop=True), df_hr.reset_index(drop=True)], axis=1)
+    df = df[df["type"] == "CSI_DATA"].copy()
+    return df
+
+def from_buffer_to_df_detection(buffer_csi, cols_csi):
+    df_csi = pd.DataFrame(columns=cols_csi)
+    for line_csi in buffer_csi:
+        result_csi = parse_csi_line(line_csi, cols_csi)
+        if result_csi is None:
+            continue
+        df_csi = pd.concat([df_csi] + [result_csi], ignore_index=True)
+    
+    df = df_csi
+    df = df[df["type"] == "CSI_DATA"].copy()
+    return df
+
+def csi_data_read_parse(port: str, port_hr: str):
+    global fft_gains, agc_gains
+    ser = serial.Serial(port=port, baudrate=921600,bytesize=8, parity='N', stopbits=1)
+    ser_hr = serial.Serial(port=port_hr, baudrate=921600,bytesize=8, parity='N', stopbits=1)
+    if ser.isOpen() and ser_hr.isOpen():
+        print("open success")
+    else:
+        print("open failed")
+        return
+    
+    buffer_csi = []
+    buffer_hr = []
+    try:
+        while True:
+            outcome, strings, string_hr = iterate_data_rcv(ser, ser_hr, ACCEPTED_IR_RANGE, ACCEPTED_HR_RANGE, True)
+            if outcome is None:
+                break
+            if outcome == False:
+                continue
+            buffer_csi.append(strings)
+            buffer_hr.append(string_hr)
+
+    except KeyboardInterrupt:
+        print("Saving data...")
+    
+    ser.close()
+    ser_hr.close()
+
+    df = from_buffer_to_df(buffer_csi, buffer_hr, DATA_COLUMNS_NAMES, HR_COLUMNS_NAMES)
+    df.to_csv("data/raw_data.csv", mode="a", header=not os.path.exists("data/raw_data.csv"), index=False)
+    return
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(
+        description="Read CSI data from serial port and display it graphically")
+    parser.add_argument('-p', '--port', dest='port', action='store', required=True,
+                        help="Serial port number of csv_recv device")
+    parser.add_argument('-phr', '--port_hr', dest='port_hr', action='store', required=True,
+                        help="Serial port number of csv_recv device")
+
+    args = parser.parse_args()
+    serial_port = args.port
+    serial_port_hr = args.port_hr
+
+    csi_data_read_parse(serial_port, serial_port_hr)

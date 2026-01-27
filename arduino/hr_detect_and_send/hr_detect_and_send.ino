@@ -28,12 +28,18 @@
 
 #include "heartRate.h"
 
+#define SEND_RATE 20  //Hz
+#define IR_THRESHOLD 50000
+
+#define T (1000 / SEND_RATE)
+
 MAX30105 particleSensor;
 
-const byte RATE_SIZE = 4; //Increase this for more averaging. 4 is good.
+const byte RATE_SIZE = 8; //Increase this for more averaging. 4 is good.
 byte rates[RATE_SIZE]; //Array of heart rates
 byte rateSpot = 0;
 long lastBeat = 0; //Time at which the last beat occurred
+unsigned long last_send = 0;
 
 float beatsPerMinute;
 int beatAvg;
@@ -52,16 +58,18 @@ void setup()
   Serial.println("Place your index finger on the sensor with steady pressure.");
 
   particleSensor.setup(); //Configure sensor with default settings
-  particleSensor.setPulseAmplitudeRed(0x0A); //Turn Red LED to low to indicate sensor is running
+  particleSensor.setPulseAmplitudeRed(0x1F); //Turn Red LED to low to indicate sensor is running
   particleSensor.setPulseAmplitudeGreen(0); //Turn off Green LED
+
+  last_send = millis();
 }
 
 void loop()
 {
   long irValue = particleSensor.getIR();
+  bool found_beat = checkForBeat(irValue) && irValue >= IR_THRESHOLD;
 
-  if (checkForBeat(irValue) == true)
-  {
+  if(found_beat) {
     //We sensed a beat!
     long delta = millis() - lastBeat;
     lastBeat = millis();
@@ -80,18 +88,24 @@ void loop()
       beatAvg /= RATE_SIZE;
     }
   }
+  
+  unsigned long elapsed = millis() - last_send;
+  if(elapsed >= T) {
+    //Serial.print("IR=");
+    Serial.print(irValue);
+    Serial.print(",");
+    //Serial.print(" BPM=");
+    Serial.print(beatsPerMinute);
+    Serial.print(",");
+    //Serial.print(" Avg BPM=");
+    Serial.print(beatAvg);
+    /*
+    if (irValue < 50000)
+      Serial.print(" No finger?");*/
 
-  Serial.print("IR=");
-  Serial.print(irValue);
-  Serial.print(", BPM=");
-  Serial.print(beatsPerMinute);
-  Serial.print(", Avg BPM=");
-  Serial.print(beatAvg);
-
-  if (irValue < 50000)
-    Serial.print(" No finger?");
-
-  Serial.println();
+    Serial.println();
+    last_send = millis();
+  }
 }
 
 
