@@ -140,6 +140,9 @@ def csi_data_read_parse(port: str, port_hr: str):
     buffer_csi = []
     buffer_hr = []
     try:
+        # send start command
+        string_start = "START\n"
+        ser.write(string_start.encode("ascii"))
         while True:
             outcome, strings, string_hr = iterate_data_rcv(ser, ser_hr, ACCEPTED_IR_RANGE, ACCEPTED_HR_RANGE, True)
             if outcome is None:

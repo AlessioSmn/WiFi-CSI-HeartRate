@@ -46,6 +46,9 @@ def csi_read_thread(port):
         print("open failed")
         return
     
+    # send start command
+    string_start = "START\n"
+    ser.write(string_start.encode("ascii"))
     print(f"Gathering data...")
     while not stop_event.is_set():
         outcome, strings, _ = iterate_data_rcv(ser, None, None, None, True)
