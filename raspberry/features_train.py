@@ -22,7 +22,6 @@ TRAIN_MODEL = True
 LEARNING_RATE = 1e-4
 
 
-
 def extract_features(df, settings):
     training_phase = settings["training_phase"]
     verbose = settings["verbose"]
@@ -175,34 +174,56 @@ def extract_features(df, settings):
     if verbose:
         print(f"each window lasts {window_duration:.2f} seconds")
 
-    # save
+    # prepare df with windows
     df_windows = pd.DataFrame({
         'window': [np.array2string(w, separator=',', threshold=np.inf) for w in windows_norm],
         'AVG BPM': list(hr_windows)
     })
     if verbose:
-        print(df_windows['AVG BPM'].value_counts(bins=10))
+        print(df_windows['AVG BPM'].value_counts(bins=20))
     
-    bins = [60, 66.717, 72.434, 78.151, 83.868, 89.585, 95.302, 101.019, 106.736, 112.453, 118.17]
-    labels = range(len(bins)-1)
-    df_windows['BPM_bin'] = pd.cut(df_windows['AVG BPM'], bins=bins, labels=labels, include_lowest=True)
-    # trovo la dimensione della classe più grande
+    # balance dataset
+    N_BINS = 20
+    bpm_min = df_windows['AVG BPM'].min()
+    bpm_max = df_windows['AVG BPM'].max()
+    bins = np.linspace(bpm_min, bpm_max, N_BINS + 1)
+    labels = range(N_BINS)
+
+    df_windows['BPM_bin'] = pd.cut(
+        df_windows['AVG BPM'],
+        bins=bins,
+        labels=labels,
+        include_lowest=True
+    )
+
+    # dimensione classe più grande
     max_count = df_windows['BPM_bin'].value_counts().max()
-    # funzione per fare oversampling
+
     def oversample(df, target_col, max_count):
         dfs = []
         for cls, group in df.groupby(target_col):
+            if len(group) == 0:
+                continue
             n_repeat = max_count // len(group)
             remainder = max_count % len(group)
-            df_rep = pd.concat([group]*n_repeat + [group.sample(remainder, replace=True)])
+
+            df_rep = pd.concat(
+                [group] * n_repeat +
+                [group.sample(remainder, replace=True)]
+            )
             dfs.append(df_rep)
-        return pd.concat(dfs).sample(frac=1).reset_index(drop=True)  # shuffle
-    # applico oversampling
+
+        return pd.concat(dfs).sample(frac=1).reset_index(drop=True)
+
+    # applica oversampling
     df_balanced = oversample(df_windows, 'BPM_bin', max_count)
-    # ora df_balanced ha tutte le classi bilanciate
-    df_windows = df_windows[["window", "AVG BPM"]].copy()
+
+    # tieni solo le colonne utili
+    df_windows = df_balanced[['window', 'AVG BPM']].copy()
+
     if verbose:
-        print(df_balanced['AVG BPM'].value_counts(bins=10))
+        print(df_balanced['AVG BPM'].value_counts(bins=20))
+
 
     return df_balanced
 

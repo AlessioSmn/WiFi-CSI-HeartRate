@@ -9,12 +9,11 @@ from io import StringIO
 import ast
 from scipy.signal import butter, filtfilt, savgol_filter
 from typing import List, Tuple, Optional, Dict, Any
-import tensorflow as tf
-from tensorflow import keras
 import numpy as np
 import pandas as pd
+import re
 
-ACCEPTED_HR_RANGE = [80, 200]
+ACCEPTED_HR_RANGE = [60, 90]
 ACCEPTED_IR_RANGE = [100000, 120000]
 DATA_COLUMNS_NAMES = ["type", "id", "mac", "rssi", "rate", "sig_mode", "mcs", "bandwidth", "smoothing", "not_sounding", "aggregation", "stbc", "fec_coding",
                       "sgi", "noise_floor", "ampdu_cnt", "channel", "secondary_channel", "local_timestamp", "ant", "sig_len", "rx_state", "len", "first_word", "data"]
@@ -32,6 +31,19 @@ def parse_csi_line(line, cols):
     except pd.errors.ParserError:
         result = None
     return result
+
+def safe_parse_csi_data(data_str):
+    if not isinstance(data_str, str):
+        return None
+
+    match = re.search(r"\[.*\]", data_str)
+    if not match:
+        return None
+
+    try:
+        return ast.literal_eval(match.group())
+    except Exception:
+        return None
 
 def iterate_data_rcv(ser, ser_hr, ir_range, avg_bpm_range, print_bpm=False):
     strings = str(ser.readline())
@@ -72,7 +84,7 @@ def iterate_data_rcv(ser, ser_hr, ir_range, avg_bpm_range, print_bpm=False):
     return True, strings, string_hr
 
 
-def from_buffer_to_df(buffer_csi, buffer_hr, cols_csi, cols_hr):
+def from_buffer_to_df(buffer_csi, buffer_hr, cols_csi, cols_hr, csi_data_length=384):
     df_csi = pd.DataFrame(columns=cols_csi)
     df_hr = pd.DataFrame(columns=cols_hr)
     for line_csi, line_hr in zip(buffer_csi, buffer_hr):
@@ -85,24 +97,40 @@ def from_buffer_to_df(buffer_csi, buffer_hr, cols_csi, cols_hr):
     
     df = pd.concat([df_csi.reset_index(drop=True), df_hr.reset_index(drop=True)], axis=1)
     df = df[df["type"] == "CSI_DATA"].copy()
+    df["csi_raw"] = df["data"].apply(safe_parse_csi_data)
+    df = df.dropna()
+    df["csi_len"] = df["csi_raw"].apply(len)
+    df = df[df["csi_len"] == csi_data_length].copy()
     return df
 
-def from_buffer_to_df_detection(buffer_csi, cols_csi):
-    df_csi = pd.DataFrame(columns=cols_csi)
+import pandas as pd
+
+def from_buffer_to_df_detection(buffer_csi, cols_csi, csi_data_length=384):
+    parsed_rows = []
+
     for line_csi in buffer_csi:
         result_csi = parse_csi_line(line_csi, cols_csi)
-        if result_csi is None:
-            continue
-        df_csi = pd.concat([df_csi] + [result_csi], ignore_index=True)
-    
-    df = df_csi
-    df = df[df["type"] == "CSI_DATA"].copy()
-    return df
+        if result_csi is not None:
+            # Converti il risultato (DataFrame a riga singola) in dizionario e aggiungi alla lista
+            parsed_rows.append(result_csi.iloc[0].to_dict())
+
+    # Crea il DataFrame in un colpo solo
+    df_csi = pd.DataFrame(parsed_rows, columns=cols_csi)
+
+    # Filtra solo CSI_DATA
+    df_csi = df_csi[df_csi["type"] == "CSI_DATA"].copy()
+    df_csi["csi_raw"] = df_csi["data"].apply(safe_parse_csi_data)
+    df_csi = df_csi.dropna()
+    df_csi["csi_len"] = df_csi["csi_raw"].apply(len)
+    df_csi = df_csi[df_csi["csi_len"] == csi_data_length].copy()
+
+    return df_csi
+
 
 def csi_data_read_parse(port: str, port_hr: str):
     global fft_gains, agc_gains
-    ser = serial.Serial(port=port, baudrate=921600,bytesize=8, parity='N', stopbits=1)
-    ser_hr = serial.Serial(port=port_hr, baudrate=921600,bytesize=8, parity='N', stopbits=1)
+    ser = serial.Serial(port=port, baudrate=115200,bytesize=8, parity='N', stopbits=1)
+    ser_hr = serial.Serial(port=port_hr, baudrate=115200,bytesize=8, parity='N', stopbits=1)
     if ser.isOpen() and ser_hr.isOpen():
         print("open success")
     else:
@@ -128,6 +156,7 @@ def csi_data_read_parse(port: str, port_hr: str):
     ser_hr.close()
 
     df = from_buffer_to_df(buffer_csi, buffer_hr, DATA_COLUMNS_NAMES, HR_COLUMNS_NAMES)
+    df = df[["local_timestamp", "csi_raw", "IR", "BPM", "AVG BPM"]]
     df.to_csv("data/raw_data.csv", mode="a", header=not os.path.exists("data/raw_data.csv"), index=False)
     return
 

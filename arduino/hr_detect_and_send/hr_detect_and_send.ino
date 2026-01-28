@@ -46,7 +46,7 @@ int beatAvg;
 
 void setup()
 {
-  Serial.begin(921600);
+  Serial.begin(115200);
   Serial.println("Initializing...");
 
   // Initialize sensor
