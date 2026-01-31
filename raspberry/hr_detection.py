@@ -7,7 +7,7 @@ from collections import deque
 from collect_data import iterate_data_rcv, from_buffer_to_df_detection
 from features_train import extract_features
 from tensorflow import keras
-
+import tensorflow as tf
 
 N_SAMPLES_SCREEN_UPDATE = 10
 MOVING_AVG_SIZE_PREDICTIONS = 10
@@ -28,6 +28,7 @@ new_input_event = threading.Event()
 input_lstm = None
 input_lstm_lock = threading.Lock()
 
+tf.keras.mixed_precision.set_global_policy('mixed_float16')
 model = keras.models.load_model(f"models/csi_hr_best_{SEGMENTATION_WINDOW_LENGTH}.keras", safe_mode=False)
 
 def csi_read_thread(port):
