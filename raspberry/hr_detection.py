@@ -31,6 +31,16 @@ input_lstm_lock = threading.Lock()
 tf.keras.mixed_precision.set_global_policy('mixed_float16')
 model = keras.models.load_model(f"models/csi_hr_best_{SEGMENTATION_WINDOW_LENGTH}.keras", safe_mode=False)
 
+ON_RPI = False
+try:
+    with open("/proc/device-tree/model") as f:
+        ON_RPI = "raspberry pi" in f.read().lower()
+except:
+    pass
+
+if ON_RPI:
+    N_SAMPLES_SCREEN_UPDATE = 1
+
 def csi_read_thread(port):
     global new_data_event
     global buffer_csi
@@ -80,7 +90,7 @@ def csi_process_thread():
         new_data_event.clear()
 
         with buffer_csi_lock:
-            buffer = buffer_csi.copy()
+            buffer = buffer_csi
             buffer_csi = []
         
         df = from_buffer_to_df_detection(buffer, DATA_COLUMNS_NAMES)
@@ -94,7 +104,7 @@ def csi_process_thread():
             print(f"Gathering initial data: {current_df_len}/{SEGMENTATION_WINDOW_LENGTH}")
             continue
         
-        window = extract_features(current_df.head(SEGMENTATION_WINDOW_LENGTH), settings)
+        window = extract_features(current_df.values[:SEGMENTATION_WINDOW_LENGTH], settings)
         current_df = current_df.iloc[1:].reset_index(drop=True)
         if len(window) != 1:
             continue
