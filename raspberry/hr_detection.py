@@ -104,7 +104,7 @@ def csi_process_thread():
             print(f"Gathering initial data: {current_df_len}/{SEGMENTATION_WINDOW_LENGTH}")
             continue
         
-        window = extract_features(current_df.values[:SEGMENTATION_WINDOW_LENGTH], settings)
+        window = extract_features(current_df.head(SEGMENTATION_WINDOW_LENGTH), settings)
         current_df = current_df.iloc[1:].reset_index(drop=True)
         if len(window) != 1:
             continue
