@@ -21,6 +21,7 @@ SAVE_TRAIN_DATA = False             # decide if the training data should be save
 TRAIN_MODEL = True                  # decide if the training should be carried out
 LEARNING_RATE = 1e-4                # learning rate of the model during the training (before it was 0.001, but it will diverge)
 
+MODEL_PATH = f"models/csi_hr_{SEGMENTATION_WINDOW_LENGTH}.keras"
 
 def extract_features(df, settings):
     training_phase = settings["training_phase"]
@@ -301,5 +302,5 @@ if __name__ == '__main__':
     ]
 
     model.fit(X, y, batch_size=128, epochs=5000, verbose=2, validation_split=0.2, callbacks=callbacks_list)
-    model.save(f"models/csi_hr_{SEGMENTATION_WINDOW_LENGTH}.keras")
+    model.save(MODEL_PATH)
     print("Model training complete!")

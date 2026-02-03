@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import re
 
-ACCEPTED_HR_RANGE = [60, 90]
+ACCEPTED_HR_RANGE = [50, 200]
 ACCEPTED_IR_RANGE = [100000, 120000]
 DATA_COLUMNS_NAMES = ["type", "local_timestamp", "data"]
 HR_COLUMNS_NAMES = ["IR", "BPM", "AVG BPM"]

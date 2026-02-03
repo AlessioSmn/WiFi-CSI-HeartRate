@@ -50,6 +50,7 @@ def csi_read_thread(port):
         print("open success")
     else:
         print("open failed")
+        stop_event.set()
         return
     
     # send start command
@@ -127,6 +128,7 @@ def prediction_thread(port):
         print("open success")
     else:
         print("open failed")
+        stop_event.set()
         return
     
     while not stop_event.is_set():
@@ -175,11 +177,7 @@ if __name__ == '__main__':
     t_process.start()
     t_pred.start()
     try:
-        t_read.join()
-        stop_event.set()
-        t_process.join()
-        stop_event.set()
-        t_pred.join()
+        stop_event.wait()
     except KeyboardInterrupt:
         print("Closing...")
         stop_event.set()
