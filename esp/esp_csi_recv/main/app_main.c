@@ -21,6 +21,8 @@
 
 #define START_CMD "START\n"
 #define START_CMD_LEN 6
+#define STOP_CMD "STOP\n"
+#define STOP_CMD_LEN 5
 
 #define CONFIG_LESS_INTERFERENCE_CHANNEL   11
 #if CONFIG_IDF_TARGET_ESP32C5 || CONFIG_IDF_TARGET_ESP32C6
@@ -188,22 +190,9 @@ static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
     uint32_t rx_id = *(uint32_t *)(info->payload + 15);
     const wifi_pkt_rx_ctrl_t *rx_ctrl = &info->rx_ctrl;
 
-    /*
-    if (!s_count) {
-        uart_print(UART_NUM_0, "================ CSI RECV ================\n");
-        uart_print(UART_NUM_0, "type,id,mac,rssi,rate,sig_mode,mcs,bandwidth,smoothing,not_sounding,aggregation,stbc,fec_coding,sgi,noise_floor,ampdu_cnt,channel,secondary_channel,local_timestamp,ant,sig_len,rx_state,len,first_word,data\n");
-    }*/
-
-    //DATA_COLUMNS_NAMES = ["type", "local_timestamp", "data"]
+    // DATA_COLUMNS_NAMES = ["type", "local_timestamp", "data"]
     // print type, local_timestamp
     uart_printf(UART_NUM_0, "CSI_DATA,%d", rx_ctrl->timestamp);
-    /*
-    uart_printf(UART_NUM_0, "CSI_DATA,%d," MACSTR ",%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
-                rx_id, MAC2STR(info->mac), rx_ctrl->rssi, rx_ctrl->rate, rx_ctrl->sig_mode,
-                rx_ctrl->mcs, rx_ctrl->cwb, rx_ctrl->smoothing, rx_ctrl->not_sounding,
-                rx_ctrl->aggregation, rx_ctrl->stbc, rx_ctrl->fec_coding, rx_ctrl->sgi,
-                rx_ctrl->noise_floor, rx_ctrl->ampdu_cnt, rx_ctrl->channel, rx_ctrl->secondary_channel,
-                rx_ctrl->timestamp, rx_ctrl->ant, rx_ctrl->sig_len, rx_ctrl->rx_state);*/
 
     // print data
     uart_printf(UART_NUM_0, ",\"[%d", info->buf[0]);
@@ -216,30 +205,7 @@ static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
 }
 
 /*************** CSI INIT *****************/
-static void wifi_csi_init()
-{
-    uint8_t data[200];
-
-    // wait for START command
-    while (1) {
-        int len = uart_read_bytes(
-            UART_NUM_0,
-            data,
-            START_CMD_LEN,
-            pdMS_TO_TICKS(1000)   // timeout 1s
-        );
-        //uart_printf(UART_NUM_0, "waiting... received %d bytes\n", len);
-
-        if (len > 0) {
-            data[len] = '\0';
-            //uart_printf(UART_NUM_0, "received %s\n", (char*)data);
-            if(strcmp((char*)data, START_CMD) == 0) {
-                // start command received
-                break;
-            }
-        }
-    }
-
+static void wifi_csi_init() {
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous(true));
 
     wifi_csi_config_t csi_config = {
@@ -284,12 +250,31 @@ static void wifi_csi_init()
 
     ESP_ERROR_CHECK(esp_wifi_set_csi_config(&csi_config));
     ESP_ERROR_CHECK(esp_wifi_set_csi_rx_cb(wifi_csi_rx_cb, NULL));
-    ESP_ERROR_CHECK(esp_wifi_set_csi(true));
 }
 
+
+static void uart_cmd_task(void *arg) {
+    uint8_t data[16];
+
+    while (1) {
+        int len = uart_read_bytes(UART_NUM_0, data, sizeof(data) - 1, pdMS_TO_TICKS(200));
+
+        if (len > 0) {
+            data[len] = '\0';
+
+            if (strcmp((char *)data, START_CMD) == 0) {
+                ESP_ERROR_CHECK(esp_wifi_set_csi(true));
+            }
+            else if (strcmp((char *)data, STOP_CMD) == 0) {
+                ESP_ERROR_CHECK(esp_wifi_set_csi(false));
+            }
+        }
+    }
+}
+
+
 /*************** MAIN *****************/
-void app_main()
-{
+void app_main() {
     const int tx_pin = UART_PIN_NO_CHANGE;
     const int rx_pin = UART_PIN_NO_CHANGE;
 
@@ -313,6 +298,7 @@ void app_main()
     }
     ESP_ERROR_CHECK(ret);
 
+    // initialize wifi
     wifi_init();
 
 #if CONFIG_IDF_TARGET_ESP32C5
@@ -325,5 +311,8 @@ void app_main()
     wifi_esp_now_init(peer);
 #endif
 
+    // initialize csi data gathering
     wifi_csi_init();
+
+    xTaskCreate(uart_cmd_task, "uart_cmd_task", 4096, NULL, 10, NULL);
 }

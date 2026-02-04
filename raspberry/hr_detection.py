@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import serial
 import threading
+import time
 from collections import deque
 from collect_data import iterate_data_rcv, from_buffer_to_df_detection
 from features_train import extract_features
@@ -46,17 +47,25 @@ def csi_read_thread(port):
     global new_data_event
     global buffer_csi
     global stop_event
-    ser = serial.Serial(port=port, baudrate=115200,bytesize=8, parity='N', stopbits=1, timeout=RECEIVE_TIMEOUT)
-    if ser.isOpen():
-        print("open success")
-    else:
-        print("open failed")
+    ser = None
+    try:
+        ser = serial.Serial(port=port, baudrate=115200,bytesize=8, parity='N', stopbits=1, timeout=RECEIVE_TIMEOUT)
+        if ser.isOpen():
+            print("CSI receiver: open success")
+        else:
+            print("CSI receiver: open failed")
+            stop_event.set()
+            return
+    except OSError:
+        print("CSI receiver: open failed")
         stop_event.set()
         return
     
     # send start command
     string_start = "START\n"
     ser.write(string_start.encode("ascii"))
+    ser.flush()
+    ser.reset_input_buffer()
     print(f"Gathering data...")
     while not stop_event.is_set():
         outcome, strings, _ = iterate_data_rcv(ser, None, None, None, True)
@@ -70,6 +79,12 @@ def csi_read_thread(port):
         
         new_data_event.set()
     
+    # stop reception, clear buffer, close serial
+    string_stop = "STOP\n"
+    ser.write(string_stop.encode("ascii"))
+    ser.flush()
+    time.sleep(1)
+    ser.reset_input_buffer()
     ser.close()
 
 def csi_process_thread():
@@ -128,9 +143,9 @@ def prediction_thread(port):
     ser_screen = serial.Serial(port=port, baudrate=115200,bytesize=8, parity='N', stopbits=1)
     samples = deque(maxlen=MOVING_AVG_SIZE_PREDICTIONS)
     if ser_screen.isOpen():
-        print("open success")
+        print("STM32 lcd: open success")
     else:
-        print("open failed")
+        print("STM32 lcd: open failed")
         stop_event.set()
         return
     

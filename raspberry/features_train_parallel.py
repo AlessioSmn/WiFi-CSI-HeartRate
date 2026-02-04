@@ -21,7 +21,7 @@ N_SUB = CSI_DATA_LENGTH // 2
 
 SAMPLING_FREQUENCY = 20        # Hz
 WINDOW_LENGTH = 200            # samples
-LEARNING_RATE = 1e-4
+LEARNING_RATE = 0.001          #1e-4
 MSE_THRESHOLD = 0.01
 
 TRAIN_MODEL = True
@@ -216,6 +216,12 @@ if __name__ == "__main__":
     print("X shape:", X.shape)
     print("Estimated size (GB):", X.nbytes / 1e9)
 
+    rng = np.random.default_rng(seed=42)
+    idx = np.arange(len(X))
+    rng.shuffle(idx)
+    X = X[idx]
+    y = y[idx]
+
     # =======================
     # MODEL
     # =======================
@@ -262,7 +268,7 @@ if __name__ == "__main__":
         X, y,
         batch_size=BATCH_SIZE,
         epochs=5000,
-        validation_split=0.2,
+        validation_split=0.3,
         callbacks=[checkpoint, StopCallback()],
         verbose=2
     )
