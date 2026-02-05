@@ -11,7 +11,7 @@ from tensorflow import keras
 import tensorflow as tf
 
 N_SAMPLES_SCREEN_UPDATE = 10
-MOVING_AVG_SIZE_PREDICTIONS = 10
+MOVING_AVG_SIZE_PREDICTIONS = 20
 DATA_COLUMNS_NAMES = ["type", "local_timestamp", "data"]
 HR_COLUMNS_NAMES = ["IR", "BPM", "AVG BPM"]
 CSI_DATA_LENGTH = 384               # esp32 exposes only 192 subcarriers, each carrier has associated I/Q components, so 192 x 2 = 384
@@ -38,7 +38,7 @@ new_hr = None
 new_hr_lock = threading.Lock()
 
 tf.keras.mixed_precision.set_global_policy('mixed_float16')
-model = keras.models.load_model(f"models/csi_hr_best_{SEGMENTATION_WINDOW_LENGTH}.keras", safe_mode=False)
+model = keras.models.load_model(f"models/csi_hr_best_{SEGMENTATION_WINDOW_LENGTH}_val012.keras", safe_mode=False)
 
 ON_RPI = False
 try:
