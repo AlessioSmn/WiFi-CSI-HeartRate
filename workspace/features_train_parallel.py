@@ -28,8 +28,9 @@ TRAIN_MODEL = True
 SAVE_TRAIN_DATA = False
 
 MODEL_PATH = f"models/csi_hr_{WINDOW_LENGTH}.keras"
-CONTINUE_MODEL = f"models/csi_hr_best_{WINDOW_LENGTH}.keras"
+CONTINUE_MODEL = None
 BATCH_SIZE = 64
+TRAIN_FOR_TFLITE = True
 
 # =======================
 # TF GPU SAFE CONFIG
@@ -223,13 +224,18 @@ if __name__ == "__main__":
     # =======================
     # MODEL
     # =======================
-
     inputs = keras.Input(shape=(WINDOW_LENGTH, N_SUB))
-    x = keras.layers.LSTM(64, return_sequences=True)(inputs)
-    x = keras.layers.Dropout(0.2)(x)
-    x = keras.layers.LSTM(32)(x)
-    x = keras.layers.Dropout(0.2)(x)
-    x = keras.layers.Dense(16, activation="relu")(x)
+    if not TRAIN_FOR_TFLITE:
+        x = keras.layers.LSTM(64, return_sequences=True)(inputs)
+        x = keras.layers.Dropout(0.2)(x)
+        x = keras.layers.LSTM(32)(x)
+        x = keras.layers.Dropout(0.2)(x)
+        x = keras.layers.Dense(16, activation="relu")(x)
+    else:
+        x = keras.layers.LSTM(64, return_sequences=True, unroll=True)(inputs)
+        x = keras.layers.Dropout(0.2)(x)
+        x = keras.layers.LSTM(32, unroll=True)(x)
+        x = keras.layers.Dropout(0.2)(x)
     outputs = keras.layers.Dense(1)(x)
 
     model = None
@@ -242,7 +248,6 @@ if __name__ == "__main__":
         optimizer=keras.optimizers.Adam(LEARNING_RATE),
         loss="mse"
     )
-
     model.summary()
 
     # =======================
