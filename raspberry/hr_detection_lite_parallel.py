@@ -162,6 +162,7 @@ def lcd_process(port, q_in, stop_event):
     n = 0
 
     print("lcd_process: waiting for prediction...")
+    ser.write(f"000\n".encode("ascii"))
 
     while not stop_event.is_set():
         try:
