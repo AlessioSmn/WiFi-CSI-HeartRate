@@ -40,10 +40,12 @@ import tflite_runtime.interpreter as tflite
 import numpy as np
 
 # Carica modello TFLite
+print("Loading TFLITE model...")
 interpreter = tflite.Interpreter(model_path=f"models/csi_hr_best_{SEGMENTATION_WINDOW_LENGTH}.tflite")
 interpreter.allocate_tensors()
 input_details = interpreter.get_input_details()
 output_details = interpreter.get_output_details()
+print("TFLITE model loaded!")
 
 ON_RPI = False
 try:
@@ -53,6 +55,7 @@ except:
     pass
 
 if ON_RPI:
+    print("Raspberry detected!")
     N_SAMPLES_SCREEN_UPDATE = 1
 
 def csi_read_thread(port):
@@ -78,7 +81,7 @@ def csi_read_thread(port):
     ser.write(string_start.encode("ascii"))
     ser.flush()
     ser.reset_input_buffer()
-    print(f"Gathering data...")
+    print(f"csi_read_thread: Gathering data...")
     while not stop_event.is_set():
         strings = iterate_data_rcv(ser)
         if strings is None:
@@ -112,6 +115,7 @@ def csi_process_thread():
     settings["segmentation_window_length"] = SEGMENTATION_WINDOW_LENGTH
     current_df = pd.DataFrame(columns=DATA_COLUMNS_NAMES)
 
+    print("csi_process_thread: waiting for data...")
     while not stop_event.is_set():
         new_data_event.wait()
         new_data_event.clear()
@@ -152,6 +156,7 @@ def prediction_thread():
     global new_hr
     global new_hr_event
     
+    print("csi_prediction_thread: waiting for window...")
     while not stop_event.is_set():
         new_input_event.wait()
         new_input_event.clear()
@@ -188,6 +193,7 @@ def lcd_thread(port):
         stop_event.set()
         return
     
+    print("lcd_thread: waiting for prediction...")
     while not stop_event.is_set():
         new_hr_event.wait()
         new_hr_event.clear()
