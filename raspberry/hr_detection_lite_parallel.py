@@ -177,7 +177,7 @@ def lcd_process(port, q_in, stop_event):
 
         if n % N_SAMPLES_SCREEN_UPDATE == 0:
             try:
-                ser.write(f"{avg:03d}\n".encode())
+                ser.write(f"{avg:03d}\n".encode("ascii"))
             except:
                 pass
 
