@@ -107,8 +107,10 @@ def csi_process_process(q_in, q_out, stop_event):
             continue
 
         current_df = pd.concat([current_df, df], ignore_index=True)
+        current_df_len = len(current_df)
 
-        if len(current_df) < SEGMENTATION_WINDOW_LENGTH:
+        if current_df_len < SEGMENTATION_WINDOW_LENGTH:
+            print(f"gathering data... {current_df_len}/{SEGMENTATION_WINDOW_LENGTH}")
             continue
 
         window = extract_features(
