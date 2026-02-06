@@ -5,47 +5,44 @@ Group project for Industrial Application course, MSc in Computer Engineering, Un
 ## Hardware
 Raspberry Pi 3 Model B+
 
-ESP-WROOM-32 (x2)
-## Deployment
-### TODO CHANGE
-sudo nano /boot/firmware/config.txt
+ESP-WROOM-32 (x3)
 
-enable_uart=1
-dtoverlay=disable-bt
+MAX30102 sensor
 
-sudo reboot
+STM32F4-DISCOVERY
 
+## Installation
+### Linux (PC x86)
+Create a new virtual environment for training the LSTM model and converting it with TensorFlow Lite:
+```bash
+conda create -n tflite python=3.11
+conda activate tflite
+```
+Install the following packages:
+```bash
+pip install pandas==2.3.3
+pip install numpy==1.23.5
+pip install tensorflow==2.12.0
+pip install tflite-runtime==2.14.0
+```
 
 ### Raspberry
+Create a new virtual environment for training the LSTM model and converting it with TensorFlow Lite:
 ```bash
-USR> python ./raspberry/main.py
+conda create -n tflite python=3.11
+conda activate tflite
 ```
-Options available can be seen via:
+Install the following packages:
 ```bash
-USR> python ./raspberry/main.py -h
+pip install pandas==3.0.0
+pip install numpy==1.26.4
+pip install pyserial==3.5
+pip install scipy==1.17.0
+pip install tflite-runtime==2.14.0
+```
 
-usage: main.py [-h] -p PORT [--csv] [-d {debug,info,error}]
-
-Read CSI data from serial port, extract heart rate and display it graphically
-
-options:
-  -h, --help            show this help message and exit
-  -p, --port PORT       Serial port of CSI device (or .csv filename, if --csv specified)
-  --csv                 If specifies, it inticates to use the parameter -p as a .csv filename
-  -d, --debug {debug,info,error}
-                        Print level
-
-    Examples:
-     - from serial (COM3), debug level default (INFO)
-        python main.py -p COM3
-
-     - from serial (COM3), debug level DEBUG
-        python main.py -p COM3 -d debug
-
-     - from csv (file.csv), debug level default (INFO)
-        python main.py -p file.csv --csv
-
-     - from csv (file.csv), debug level DEBUG
-        python main.py -p file.csv --csv -d debug
-
+## Deployment
+### Raspberry
+```bash
+python hr_detection_lite_parallel.py -p /dev/ttyUSB0 -ps /dev/ttyACM0
 ```
