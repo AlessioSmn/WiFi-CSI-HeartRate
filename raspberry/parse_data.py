@@ -2,6 +2,7 @@ import numpy as np
 from io import StringIO
 import numpy as np
 import pandas as pd
+import csv
 
 def parse_csi_line_csv(line, cols):
     """
