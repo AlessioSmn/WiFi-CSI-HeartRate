@@ -8,7 +8,7 @@ import pandas as pd
 import serial
 import tflite_runtime.interpreter as tflite
 
-from parse_data import iterate_data_rcv, from_buffer_to_df_detection
+from parse_data import from_buffer_to_df_detection
 from features_raspberry import extract_features
 
 
@@ -32,6 +32,7 @@ LCD_BAUDRATE = 115200
 def csi_read_process(port, q_out, stop_event):
     """Read CSI strings from serial and push to queue."""
 
+    # open port associated to the CSI receiver
     ser = None
     try:
         ser = serial.Serial(port, CSI_RX_BAUDRATE, timeout=RECEIVE_TIMEOUT)
@@ -41,16 +42,21 @@ def csi_read_process(port, q_out, stop_event):
         stop_event.set()
         return
     
+    # wait for serial to be stable, clear eventual spurious bytes, send start command
     time.sleep(2)
     ser.reset_input_buffer()
     ser.write(b"START\n")
 
+    # start receiving data
     print("csi_read_process: Gathering data...")
-
     while not stop_event.is_set():
-        strings = iterate_data_rcv(ser)
-        if strings is None:
+
+        strings = str(ser.readline())
+        if not strings:
+            print("no string from csi port")
             continue
+        strings = strings.lstrip('b\'').rstrip('\\r\\n\'')
+        # print(strings)
 
         try:
             q_out.put(strings, timeout=0.5)
@@ -68,14 +74,6 @@ def csi_read_process(port, q_out, stop_event):
 
 def csi_process_process(q_in, q_out, stop_event):
     """Convert raw CSI to feature windows."""
-
-    settings = {
-        "training_phase": False,
-        "verbose": False,
-        "csi_data_length": CSI_DATA_LENGTH,
-        "sampling_frequency": SAMPLING_FREQUENCY,
-        "segmentation_window_length": SEGMENTATION_WINDOW_LENGTH,
-    }
 
     current_df = pd.DataFrame(columns=DATA_COLUMNS_NAMES)
 
@@ -99,7 +97,10 @@ def csi_process_process(q_in, q_out, stop_event):
             continue
 
         window = extract_features(
-            current_df.head(SEGMENTATION_WINDOW_LENGTH), settings
+            current_df.head(SEGMENTATION_WINDOW_LENGTH),
+            CSI_DATA_LENGTH,
+            SAMPLING_FREQUENCY,
+            SEGMENTATION_WINDOW_LENGTH
         )
 
         current_df = current_df.iloc[1:].reset_index(drop=True)
