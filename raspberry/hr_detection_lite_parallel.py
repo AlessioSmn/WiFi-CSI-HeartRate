@@ -14,7 +14,7 @@ from features_raspberry import extract_features
 
 
 # ================= CONFIG =================
-N_SAMPLES_SCREEN_UPDATE = 10
+N_SAMPLES_SCREEN_UPDATE = 1
 MOVING_AVG_SIZE_PREDICTIONS = 10
 
 DATA_COLUMNS_NAMES = ["type", "local_timestamp", "data"]
