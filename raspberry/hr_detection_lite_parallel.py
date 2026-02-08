@@ -1,5 +1,6 @@
 import argparse
 import time
+import os
 from collections import deque
 from multiprocessing import Process, Queue, Event
 
@@ -31,6 +32,8 @@ LCD_BAUDRATE = 115200
 
 def csi_read_process(port, q_out, stop_event):
     """Read CSI strings from serial and push to queue."""
+    os.sched_setaffinity(0, {0})
+    print(f"Worker PID {os.getpid()} assegnato al core {0}")
 
     # open port associated to the CSI receiver
     ser = None
@@ -74,6 +77,8 @@ def csi_read_process(port, q_out, stop_event):
 
 def csi_process_process(q_in, q_out, stop_event):
     """Convert raw CSI to feature windows."""
+    os.sched_setaffinity(0, {1})
+    print(f"Worker PID {os.getpid()} assegnato al core {1}")
 
     current_df = pd.DataFrame(columns=DATA_COLUMNS_NAMES)
 
@@ -115,6 +120,8 @@ def csi_process_process(q_in, q_out, stop_event):
 
 def prediction_process(q_in, q_out, stop_event):
     """Run TFLite inference on windows."""
+    os.sched_setaffinity(0, {2})
+    print(f"Worker PID {os.getpid()} assegnato al core {2}")
 
     print("Loading TFLite model...")
 
@@ -150,6 +157,8 @@ def prediction_process(q_in, q_out, stop_event):
 
 def lcd_process(port, q_in, stop_event):
     """Send averaged BPM predictions to LCD via serial."""
+    os.sched_setaffinity(0, {3})
+    print(f"Worker PID {os.getpid()} assegnato al core {3}")
 
     try:
         ser = serial.Serial(port, LCD_BAUDRATE)
