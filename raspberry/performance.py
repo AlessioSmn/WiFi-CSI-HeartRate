@@ -2,7 +2,7 @@ import argparse
 import time
 import os
 from collections import deque
-from multiprocessing import Process, Event, Manager
+from multiprocessing import Process, Event, Lock
 
 import numpy as np
 import pandas as pd
@@ -36,7 +36,7 @@ def print_stats(name, stats):
         print(f"[{name}] Avg: {avg*1000:.2f} ms | Max: {stats['max']*1000:.2f} ms | Count: {stats['count']}")
 
 # ================= PROCESSES =================
-def csi_read_process(port, q_out, stop_event):
+def csi_read_process(port, q_out, lock, stop_event):
     os.sched_setaffinity(0, {0})
     print(f"Worker PID {os.getpid()} assegnato al core 0")
     stats = {'count':0, 'total':0.0, 'max':0.0}
@@ -59,9 +59,11 @@ def csi_read_process(port, q_out, stop_event):
         if not strings:
             continue
         strings = strings.lstrip('b\'').rstrip('\\r\\n\'')
-        q_out.append(strings)
-        duration = time.perf_counter() - start
-        track_time(stats, duration)
+        with lock:
+            if len(q_out) >= q_out.maxlen:
+                q_out.popleft()
+            q_out.append(strings)
+        track_time(stats, time.perf_counter() - start)
 
     try:
         ser.write(b"STOP\n")
@@ -72,16 +74,19 @@ def csi_read_process(port, q_out, stop_event):
     print_stats("CSI_READ", stats)
 
 
-def csi_process_process(q_in, q_out, stop_event):
+def csi_process_process(q_in, q_out, lock_in, lock_out, stop_event):
     os.sched_setaffinity(0, {1})
     print(f"Worker PID {os.getpid()} assegnato al core 1")
     current_df = pd.DataFrame(columns=DATA_COLUMNS_NAMES)
     stats = {'count':0, 'total':0.0, 'max':0.0}
 
     while not stop_event.is_set():
-        if len(q_in) == 0:
+        buffer = None
+        with lock_in:
+            if len(q_in) > 0:
+                buffer = q_in.popleft()
+        if buffer is None:
             continue
-        buffer = q_in.pop(0)
 
         start = time.perf_counter()
         df = from_buffer_to_df_detection([buffer], DATA_COLUMNS_NAMES)
@@ -101,14 +106,16 @@ def csi_process_process(q_in, q_out, stop_event):
         current_df = current_df.iloc[1:].reset_index(drop=True)
 
         if window is not None:
-            q_out.append(window)
-        duration = time.perf_counter() - start
-        track_time(stats, duration)
+            with lock_out:
+                if len(q_out) >= q_out.maxlen:
+                    q_out.popleft()
+                q_out.append(window)
+        track_time(stats, time.perf_counter() - start)
 
     print_stats("CSI_PROCESS", stats)
 
 
-def prediction_process(q_in, q_out, stop_event):
+def prediction_process(q_in, q_out, lock_in, lock_out, stop_event):
     os.sched_setaffinity(0, {2})
     print(f"Worker PID {os.getpid()} assegnato al core 2")
     stats = {'count':0, 'total':0.0, 'max':0.0}
@@ -121,23 +128,29 @@ def prediction_process(q_in, q_out, stop_event):
     print("TFLite model loaded!")
 
     while not stop_event.is_set():
-        if len(q_in) == 0:
+        window = None
+        with lock_in:
+            if len(q_in) > 0:
+                window = q_in.popleft()
+        if window is None:
             continue
-        window = q_in.pop(0)
 
         start = time.perf_counter()
         input_data = np.array(window, dtype=np.float32)
         interpreter.set_tensor(input_details[0]["index"], input_data)
         interpreter.invoke()
         pred = interpreter.get_tensor(output_details[0]["index"])[0][0]
-        q_out.append(pred)
-        duration = time.perf_counter() - start
-        track_time(stats, duration)
+
+        with lock_out:
+            if len(q_out) >= q_out.maxlen:
+                q_out.popleft()
+            q_out.append(pred)
+        track_time(stats, time.perf_counter() - start)
 
     print_stats("PREDICTION", stats)
 
 
-def lcd_process(port, q_in, stop_event):
+def lcd_process(port, q_in, lock_in, stop_event):
     os.sched_setaffinity(0, {3})
     print(f"Worker PID {os.getpid()} assegnato al core 3")
     stats = {'count':0, 'total':0.0, 'max':0.0}
@@ -156,9 +169,12 @@ def lcd_process(port, q_in, stop_event):
     ser.flush()
 
     while not stop_event.is_set():
-        if len(q_in) == 0:
+        pred = None
+        with lock_in:
+            if len(q_in) > 0:
+                pred = q_in.popleft()
+        if pred is None:
             continue
-        pred = q_in.pop(0)
 
         start = time.perf_counter()
         samples.append(pred)
@@ -172,8 +188,7 @@ def lcd_process(port, q_in, stop_event):
                 ser.flush()
             except:
                 pass
-        duration = time.perf_counter() - start
-        track_time(stats, duration)
+        track_time(stats, time.perf_counter() - start)
 
     try:
         ser.close()
@@ -190,17 +205,22 @@ def main():
     args = parser.parse_args()
 
     stop_event = Event()
-    manager = Manager()
 
-    q_raw = manager.deque(maxlen=200)
-    q_window = manager.deque(maxlen=50)
-    q_pred = manager.deque(maxlen=50)
+    # deque con maxlen
+    q_raw = deque(maxlen=200)
+    q_window = deque(maxlen=50)
+    q_pred = deque(maxlen=50)
+
+    # lock per ogni deque
+    lock_raw = Lock()
+    lock_window = Lock()
+    lock_pred = Lock()
 
     processes = [
-        Process(target=csi_read_process, args=(args.port, q_raw, stop_event)),
-        Process(target=csi_process_process, args=(q_raw, q_window, stop_event)),
-        Process(target=prediction_process, args=(q_window, q_pred, stop_event)),
-        Process(target=lcd_process, args=(args.port_screen, q_pred, stop_event)),
+        Process(target=csi_read_process, args=(args.port, q_raw, lock_raw, stop_event)),
+        Process(target=csi_process_process, args=(q_raw, q_window, lock_raw, lock_window, stop_event)),
+        Process(target=prediction_process, args=(q_window, q_pred, lock_window, lock_pred, stop_event)),
+        Process(target=lcd_process, args=(args.port_screen, q_pred, lock_pred, stop_event)),
     ]
 
     for p in processes:
