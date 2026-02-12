@@ -84,7 +84,7 @@ def csi_read_process(port, q_out, stop_event):
             print("no string from csi port")
             continue
         strings = strings.lstrip('b\'').rstrip('\\r\\n\'')
-        print(strings)
+        # print(strings)
 
         # enqueue string
         try:
@@ -120,7 +120,7 @@ def csi_process_process(q_in, q_out, stop_event):
             continue
 
         # parse received string
-        df = from_buffer_to_df_detection([buffer], DATA_COLUMNS_NAMES)
+        df = from_buffer_to_df_detection(buffer, DATA_COLUMNS_NAMES)
         if df.empty:
             continue
 
