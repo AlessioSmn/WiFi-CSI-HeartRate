@@ -1,6 +1,7 @@
 import gc
 import numpy as np
 import numba as nb
+from scipy.signal import butter
 
 
 # =======================
@@ -23,10 +24,7 @@ def iq_to_complex_matrix(csi_raw_series, n_sub):
 
 @nb.njit(parallel=True, fastmath=True)
 def remove_dc_parallel(A, win):
-    """
-    Moving-average DC removal per subcarrier
-    A: (T, C)
-    """
+    """Moving-average DC removal per subcarrier"""
     T, C = A.shape
     out = np.empty_like(A)
 
@@ -48,40 +46,39 @@ def remove_dc_parallel(A, win):
 
 
 @nb.njit(parallel=True, fastmath=True)
-def bandpass_fft_parallel(A, fs, low, high):
-    """
-    FFT bandpass per subcarrier
-    """
+def bandpass_iir_parallel(A, b, a):
+    """Biquad IIR bandpass per subcarrier (Direct Form II)"""
     T, C = A.shape
-    out = np.empty_like(A)
-
-    freqs = np.fft.rfftfreq(T, d=1.0 / fs)
-    mask = (freqs >= low) & (freqs <= high)
+    out = np.zeros_like(A)
 
     for c in nb.prange(C):
-        X = np.fft.rfft(A[:, c])
-        X *= mask
-        out[:, c] = np.fft.irfft(X, n=T)
+        z1 = 0.0
+        z2 = 0.0
+
+        for n in range(T):
+            x = A[n, c]
+
+            y = b[0] * x + z1
+            z1 = b[1] * x - a[1] * y + z2
+            z2 = b[2] * x - a[2] * y
+
+            out[n, c] = y
 
     return out
 
 
 @nb.njit(parallel=True, fastmath=True)
 def smooth_parallel(A):
-    """
-    FIR smoothing tipo Savitzky-Golay (kernel fisso len=15)
-    """
+    """FIR smoothing tipo Savitzky–Golay (kernel fisso len=15)"""
     T, C = A.shape
     out = np.empty_like(A)
 
-    # kernel Savitzky-Golay precomputato (poly=3, win=15)
     k = np.array([
         -3, -2, -1, 0, 1, 2, 3,
         4, 3, 2, 1, 0, -1, -2, -3
     ], dtype=np.float32)
 
     k = k / np.sum(np.abs(k))
-
     half = len(k) // 2
 
     for c in nb.prange(C):
@@ -101,23 +98,18 @@ def smooth_parallel(A):
 
 @nb.njit(fastmath=True)
 def normalize_windows(X):
-    """
-    Normalizzazione per finestra
-    X: (N, W, C)
-    """
+    """Normalizzazione per finestra: X (N, W, C)"""
     N, W, C = X.shape
 
     for n in range(N):
         mean = 0.0
         std = 0.0
 
-        # mean
         for i in range(W):
             for c in range(C):
                 mean += X[n, i, c]
         mean /= (W * C)
 
-        # std
         for i in range(W):
             for c in range(C):
                 diff = X[n, i, c] - mean
@@ -125,12 +117,21 @@ def normalize_windows(X):
 
         std = np.sqrt(std / (W * C)) + 1e-6
 
-        # normalize
         for i in range(W):
             for c in range(C):
                 X[n, i, c] = (X[n, i, c] - mean) / std
 
     return X
+
+
+# =======================
+# BUTTER COEFFICIENTS (outside numba)
+# =======================
+
+def butter_coeff(fs, low=0.8, high=2.17, order=2):
+    nyq = 0.5 * fs
+    b, a = butter(order, [low / nyq, high / nyq], btype="band")
+    return b.astype(np.float32), a.astype(np.float32)
 
 
 # =======================
@@ -168,14 +169,10 @@ def extract_features(df, csi_data_length, sampling_frequency, window_length):
     gc.collect()
 
     # -----------------------
-    # 3. BANDPASS FFT
+    # 3. BANDPASS IIR
     # -----------------------
-    A_pulse = bandpass_fft_parallel(
-        A_dc,
-        sampling_frequency,
-        0.8,
-        2.17
-    )
+    b, a = butter_coeff(sampling_frequency)
+    A_pulse = bandpass_iir_parallel(A_dc, b, a)
     del A_dc
     gc.collect()
 
