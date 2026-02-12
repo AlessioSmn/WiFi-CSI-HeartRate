@@ -29,7 +29,7 @@ RECEIVE_TIMEOUT = 2                                                     # maximu
 CSI_RX_BAUDRATE = 460800                                                # baud rate for the csi receiver (esp32)
 LCD_BAUDRATE = 115200                                                   # baud rate for the lcd screen (stm32f4-discovery)
 
-MODEL_PATH = f"models/csi_hr_best_{SEGMENTATION_WINDOW_LENGTH}_old.tflite"  # path of the model to be loaded
+MODEL_PATH = f"models/csi_hr_best_{SEGMENTATION_WINDOW_LENGTH}.tflite"  # path of the model to be loaded
 
 MIN_SAMPLES_FOR_PROCESSING = 10
 
