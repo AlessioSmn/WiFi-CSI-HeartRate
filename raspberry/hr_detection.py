@@ -1,234 +1,292 @@
 import argparse
+import time
+import os
+from collections import deque
+from multiprocessing import Process, Queue, Event
+
 import numpy as np
 import pandas as pd
 import serial
-import threading
-import time
-from collections import deque
-from parse_data import iterate_data_rcv, from_buffer_to_df_detection
-from features_raspberry import extract_features
-from tensorflow import keras
 import tensorflow as tf
 
-N_SAMPLES_SCREEN_UPDATE = 10
-MOVING_AVG_SIZE_PREDICTIONS = 20
-DATA_COLUMNS_NAMES = ["type", "local_timestamp", "data"]
-HR_COLUMNS_NAMES = ["IR", "BPM", "AVG BPM"]
-CSI_DATA_LENGTH = 384               # esp32 exposes only 192 subcarriers, each carrier has associated I/Q components, so 192 x 2 = 384
-SAMPLING_FREQUENCY = 20
-SEGMENTATION_WINDOW_LENGTH = 200    # WINDOW_SIZE
-RECEIVE_TIMEOUT = 2                 # seconds
+from parse_data import from_buffer_to_df_detection
+from features_raspberry import extract_features
 
-CSI_RX_BAUDRATE = 921600
-LCD_BAUDRATE = 115200
+import queue
 
 
-stop_event = threading.Event()
+# ================= CONFIG =================
+N_SAMPLES_SCREEN_UPDATE = 1                                             # how many predictions to do before updating the screen
+MOVING_AVG_SIZE_PREDICTIONS = 10                                        # size of the moving average for the predictions
 
-new_data_event = threading.Event()
-buffer_csi = []
-buffer_csi_lock = threading.Lock()
+DATA_COLUMNS_NAMES = ["type", "local_timestamp", "data"]                 # data transferred via uart
 
-new_input_event = threading.Event()
-input_lstm = None
-input_lstm_lock = threading.Lock()
+CSI_DATA_LENGTH = 384                                                   # length of the csi data array (192 subcarriers x I/Q components)
+SAMPLING_FREQUENCY = 20                                                 # frequency of csi sampling
+SEGMENTATION_WINDOW_LENGTH = 200                                        # size of the LSTM window
+RECEIVE_TIMEOUT = 2                                                     # maximum waiting time for data to arrive in the uart line
 
-new_hr_event = threading.Event()
-new_hr = None
-new_hr_lock = threading.Lock()
+CSI_RX_BAUDRATE = 460800                                                # baud rate for the csi receiver (esp32)
+LCD_BAUDRATE = 115200                                                   # baud rate for the lcd screen (stm32f4-discovery)
 
-tf.keras.mixed_precision.set_global_policy('mixed_float16')
-model = keras.models.load_model(f"models/csi_hr_best_{SEGMENTATION_WINDOW_LENGTH}_val012.keras", safe_mode=False)
+MODEL_PATH = f"models/csi_hr_best_{SEGMENTATION_WINDOW_LENGTH}.keras"  # path of the model to be loaded
 
-ON_RPI = False
-try:
-    with open("/proc/device-tree/model") as f:
-        ON_RPI = "raspberry pi" in f.read().lower()
-except:
-    pass
+MIN_SAMPLES_FOR_PROCESSING = 10
 
-if ON_RPI:
-    N_SAMPLES_SCREEN_UPDATE = 1
+def safe_put(q, item):
+    try:
+        q.put_nowait(item)
+    except queue.Full:
+        try:
+            q.get_nowait()  # rimuovi il più vecchio
+        except queue.Empty:
+            pass
+        q.put_nowait(item)
 
-def csi_read_thread(port):
-    global new_data_event
-    global buffer_csi
-    global stop_event
+def get_all(q):
+    """Ritorna tutti gli elementi presenti nella coda al momento della chiamata."""
+    items = []
+    while len(items) < MIN_SAMPLES_FOR_PROCESSING:
+        try:
+            items.append(q.get())
+        except:
+            break  # in caso qualcuno abbia preso l'elemento prima
+    return items
+
+# ================= PROCESSES =================
+
+def csi_read_process(port, q_out, stop_event):
+    """Read CSI strings from serial and push to queue."""
+
+    # assign the process to the core 0
+    os.sched_setaffinity(0, {0})
+    print(f"Worker PID {os.getpid()} assegnato al core {0}")
+
+    # open port associated to the CSI receiver
     ser = None
     try:
-        ser = serial.Serial(port=port, baudrate=CSI_RX_BAUDRATE,bytesize=8, parity='N', stopbits=1, timeout=RECEIVE_TIMEOUT)
-        if ser.isOpen():
-            print("CSI receiver: open success")
-        else:
-            print("CSI receiver: open failed")
-            stop_event.set()
-            return
+        ser = serial.Serial(port, CSI_RX_BAUDRATE, timeout=RECEIVE_TIMEOUT)
+        print("CSI receiver: open success")
     except OSError:
         print("CSI receiver: open failed")
         stop_event.set()
         return
     
-    # send start command
-    string_start = "START\n"
-    ser.write(string_start.encode("ascii"))
-    ser.flush()
+    # wait for serial to be stable, clear eventual spurious bytes, send start command
+    time.sleep(2)
     ser.reset_input_buffer()
-    print(f"Gathering data...")
+    ser.write(b"START\n")
+
+    # start receiving data
+    print("csi_read_process: Gathering data...")
     while not stop_event.is_set():
-        strings = iterate_data_rcv(ser)
-        if strings is None:
-            break
+        # read line and clear it
+        strings = str(ser.readline())
+        if not strings:
+            print("no string from csi port")
+            continue
+        strings = strings.lstrip('b\'').rstrip('\\r\\n\'')
+        # print(strings)
 
-        with buffer_csi_lock:
-            buffer_csi.append(strings)
-        
-        new_data_event.set()
-    
-    # stop reception, clear buffer, close serial
-    string_stop = "STOP\n"
-    ser.write(string_stop.encode("ascii"))
-    ser.flush()
-    time.sleep(1)
-    ser.reset_input_buffer()
-    ser.close()
+        # enqueue string
+        try:
+            safe_put(q_out, strings)
+        except:
+            pass
 
-def csi_process_thread():
-    global input_lstm
-    global new_input_event
-    global new_data_event
-    global buffer_csi
-    global buffer_csi_lock
-    global stop_event
-    settings = {}
-    settings["training_phase"] = False
-    settings["verbose"] = False
-    settings["csi_data_length"] = CSI_DATA_LENGTH
-    settings["sampling_frequency"] = SAMPLING_FREQUENCY
-    settings["segmentation_window_length"] = SEGMENTATION_WINDOW_LENGTH
+    try:
+        ser.write(b"STOP\n")
+        time.sleep(1)
+        ser.close()
+    except:
+        pass
+
+
+
+def csi_process_process(q_in, q_out, stop_event):
+    """Convert raw CSI string to feature windows."""
+
+    # assign the process to core 1
+    os.sched_setaffinity(0, {1})
+    print(f"Worker PID {os.getpid()} assegnato al core {1}")
+
+    # dataframe containing the current window data
     current_df = pd.DataFrame(columns=DATA_COLUMNS_NAMES)
 
+    print("csi_process_process: waiting for data...")
     while not stop_event.is_set():
-        new_data_event.wait()
-        new_data_event.clear()
-        if stop_event.is_set():
-            break
+        # dequeue string
+        try:
+            buffer = get_all(q_in) #[q_in.get(timeout=0.5)]
+        except:
+            continue
 
-        with buffer_csi_lock:
-            buffer = buffer_csi
-            buffer_csi = []
-        
+        # parse received string
         df = from_buffer_to_df_detection(buffer, DATA_COLUMNS_NAMES)
-        if not df.empty:
-            current_df = pd.concat([current_df, df], ignore_index=True)
-        else:
+        if df.empty:
             continue
 
+        # concat current data with the new one arrived
+        current_df = pd.concat([current_df, df], ignore_index=True)
         current_df_len = len(current_df)
+
+        # gather at least SEGMENTATION_WINDOW_LENGTH samples before extracting features
         if current_df_len < SEGMENTATION_WINDOW_LENGTH:
-            print(f"Gathering initial data: {current_df_len}/{SEGMENTATION_WINDOW_LENGTH}")
+            print(f"gathering data... {current_df_len}/{SEGMENTATION_WINDOW_LENGTH}")
             continue
-        
-        window = extract_features(current_df.head(SEGMENTATION_WINDOW_LENGTH), settings)
-        if window is None or len(window) != 1:
-            continue
-        current_df = current_df.iloc[1:].reset_index(drop=True)
 
-        with input_lstm_lock:
-            input_lstm = window.copy()
-        new_input_event.set()
+        # extract features
+        window = extract_features(
+            current_df.head(SEGMENTATION_WINDOW_LENGTH),
+            CSI_DATA_LENGTH,
+            SAMPLING_FREQUENCY,
+            SEGMENTATION_WINDOW_LENGTH
+        )
+
+        # remove oldest csi data
+        current_df = current_df.iloc[-SEGMENTATION_WINDOW_LENGTH:, :].reset_index(drop=True)
+
+        # enqueue features
+        if window is not None:
+            try:
+                safe_put(q_out, window)
+            except:
+                pass
 
 
-def prediction_thread():
-    global input_lstm
-    global new_input_event
-    global stop_event
-    global model
-    global new_hr_lock
-    global new_hr
-    global new_hr_event
-    
+
+def prediction_process(q_in, q_out, stop_event):
+    """Run Keras inference on windows."""
+
+    # assign the process to core 2
+    os.sched_setaffinity(0, {2})
+    print(f"Worker PID {os.getpid()} assegnato al core {2}")
+
+    # load keras model
+    print("Loading Keras model...")
+    model = tf.keras.models.load_model(MODEL_PATH)
+    print("Keras model loaded!")
+    print("prediction_process: waiting for window...")
+
     while not stop_event.is_set():
-        new_input_event.wait()
-        new_input_event.clear()
-        if stop_event.is_set():
-            break
+        # dequeue features
+        try:
+            window = q_in.get(timeout=0.5)
+        except:
+            continue
 
-        with input_lstm_lock:
-            window = input_lstm.copy()
-        
-        new_prediction = model.predict(window, verbose=0)
-        prediction = new_prediction[0][0]
-        with new_hr_lock:
-            new_hr = prediction
-        new_hr_event.set()
+        # prepare input
+        input_data = np.array(window, dtype=np.float32)
+
+        # ensure batch dimension
+        if len(input_data.shape) == 2:
+            input_data = np.expand_dims(input_data, axis=0)
+
+        # inference
+        pred = model.predict(input_data, verbose=0)[0][0]
+
+        # enqueue prediction
+        try:
+            safe_put(q_out, float(pred))
+        except:
+            pass
 
 
-def lcd_thread(port):
-    global new_hr
-    global new_hr_event
-    global new_hr_lock
 
-    n_predictions = 0
-    ser_screen = serial.Serial(port=port, baudrate=LCD_BAUDRATE,bytesize=8, parity='N', stopbits=1)
-    samples = deque(maxlen=MOVING_AVG_SIZE_PREDICTIONS)
-    if ser_screen.isOpen():
+
+def lcd_process(port, q_in, stop_event):
+    """Send averaged BPM predictions to LCD via serial."""
+
+    # assign process to core 3
+    os.sched_setaffinity(0, {3})
+    print(f"Worker PID {os.getpid()} assegnato al core {3}")
+
+    # open port associated to the lcd screen
+    try:
+        ser = serial.Serial(port, LCD_BAUDRATE)
         print("STM32 lcd: open success")
-    else:
+    except OSError:
         print("STM32 lcd: open failed")
         stop_event.set()
         return
-    
+
+    # moving average samples
+    samples = deque(maxlen=MOVING_AVG_SIZE_PREDICTIONS)
+    n = 0
+
+    print("lcd_process: waiting for prediction...")
+    ser.write(f"000\n".encode("ascii"))
+    ser.flush()
+
     while not stop_event.is_set():
-        new_hr_event.wait()
-        new_hr_event.clear()
-        if stop_event.is_set():
-            break
+        # dequeue prediction
+        try:
+            pred = q_in.get(timeout=0.5)
+        except:
+            continue
 
-        prediction = None
-        with new_hr_lock:
-            prediction = new_hr
-        
-        samples.append(prediction)
-        n_predictions += 1
-        avg_bpm = np.mean(samples)
-        print(avg_bpm)
+        # add new samples to the others
+        samples.append(pred)
+        n += 1
 
-        # send to stm32
-        if n_predictions % N_SAMPLES_SCREEN_UPDATE == 0:
-            value = int(avg_bpm)
-            string_s = f"{value:03d}\n"
-            ser_screen.write(string_s.encode("ascii"))
-    
-    ser_screen.close()
+        # moving average computation
+        avg = int(np.mean(samples))
+        print(avg)
+
+        # update the lcd screen every N_SAMPLES_SCREEN_UPDATE predictions
+        if n % N_SAMPLES_SCREEN_UPDATE == 0:
+            try:
+                ser.write(f"{avg:03d}\n".encode("ascii"))
+                ser.flush()
+            except:
+                pass
+
+    try:
+        ser.close()
+    except:
+        pass
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(
-        description="Start hearbeat sensing")
-    parser.add_argument('-p', '--port', dest='port', action='store', required=True,
-                        help="Serial port number of the receiver device")
-    parser.add_argument('-ps', '--port_screen', dest='port_screen', action='store', required=True,
-                        help="Serial port number of the screen device")
-    
+# ================= MAIN =================
+
+def main():
+    # get arguments
+    parser = argparse.ArgumentParser(description="Start heartbeat sensing")
+    parser.add_argument("-p", "--port", required=True, help="CSI receiver serial port")
+    parser.add_argument("-ps", "--port_screen", required=True, help="LCD serial port")
 
     args = parser.parse_args()
-    serial_port = args.port
-    serial_port_screen = args.port_screen
-    
-    t_read = threading.Thread(target=csi_read_thread, args=(serial_port,))
-    t_process = threading.Thread(target=csi_process_thread)
-    t_pred = threading.Thread(target=prediction_thread)
-    t_lcd = threading.Thread(target=lcd_thread, args=(serial_port_screen,))
 
-    t_read.start()
-    t_process.start()
-    t_pred.start()
-    t_lcd.start()
+    # stop event initialization
+    stop_event = Event()
+
+    # initialize all queues
+    q_raw = Queue(maxsize=200)
+    q_window = Queue(maxsize=50)
+    q_pred = Queue(maxsize=50)
+
+    # initialize processes
+    processes = [
+        Process(target=csi_read_process, args=(args.port, q_raw, stop_event)),
+        Process(target=csi_process_process, args=(q_raw, q_window, stop_event)),
+        Process(target=prediction_process, args=(q_window, q_pred, stop_event)),
+        Process(target=lcd_process, args=(args.port_screen, q_pred, stop_event)),
+    ]
+
+    # start processes
+    for p in processes:
+        p.start()
+
+    # wait for processes to end or ctrl-c
     try:
-        stop_event.wait()
+        for p in processes:
+            p.join()
     except KeyboardInterrupt:
         print("Closing...")
         stop_event.set()
-        new_data_event.set()
-        new_input_event.set()
-        new_hr_event.set()
+        for p in processes:
+            p.terminate()
+
+
+if __name__ == "__main__":
+    main()

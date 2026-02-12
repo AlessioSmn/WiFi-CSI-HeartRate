@@ -13,8 +13,8 @@ import numpy as np
 import pandas as pd
 import re
 
-ACCEPTED_HR_RANGE = [50, 200]
-ACCEPTED_IR_RANGE = [100000, 120000]
+ACCEPTED_HR_RANGE = [50, 70]
+ACCEPTED_IR_RANGE = [80000, 120000]
 DATA_COLUMNS_NAMES = ["type", "local_timestamp", "data"]
 HR_COLUMNS_NAMES = ["IR", "BPM", "AVG BPM"]
 
@@ -128,7 +128,7 @@ def from_buffer_to_df_detection(buffer_csi, cols_csi, csi_data_length=384):
 
 def csi_data_read_parse(port: str, port_hr: str):
     global fft_gains, agc_gains
-    ser = serial.Serial(port=port, baudrate=115200,bytesize=8, parity='N', stopbits=1)
+    ser = serial.Serial(port=port, baudrate=460800,bytesize=8, parity='N', stopbits=1)
     ser_hr = serial.Serial(port=port_hr, baudrate=115200,bytesize=8, parity='N', stopbits=1)
     if ser.isOpen() and ser_hr.isOpen():
         print("open success")
