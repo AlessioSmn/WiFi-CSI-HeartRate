@@ -48,7 +48,7 @@ def get_all(q):
         try:
             items.append(q.get(timeout=0.5))
         except:
-            break  # in caso qualcuno abbia preso l'elemento prima
+            continue  # in caso qualcuno abbia preso l'elemento prima
     return items
 
 # ================= PROCESSES =================
