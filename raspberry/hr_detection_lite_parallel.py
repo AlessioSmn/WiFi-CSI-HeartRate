@@ -118,7 +118,7 @@ def csi_process_process(q_in, q_out, stop_event):
     while not stop_event.is_set():
         # dequeue string
         try:
-            buffer = [q_in.get(timeout=0.5)]
+            buffer = get_all(q_in) #[q_in.get(timeout=0.5)]
         except:
             continue
 
