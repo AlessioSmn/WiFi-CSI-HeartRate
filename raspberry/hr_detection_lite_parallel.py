@@ -41,6 +41,7 @@ def safe_put(q, item):
         except:
             pass
     q.put(item, timeout=0.5)
+    print(f"inserted {q.qsize()}")
 
 def get_all(q):
     """Ritorna tutti gli elementi presenti nella coda al momento della chiamata."""
