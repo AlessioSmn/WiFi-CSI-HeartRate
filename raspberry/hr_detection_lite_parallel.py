@@ -37,6 +37,7 @@ def safe_put(q, item):
     if q.qsize() >= MAX_QUEUE_LENGTH:
         try:
             q.get_nowait()
+            print(f"buffer overflow {q.qsize()}")
         except:
             pass
     q.put(item, timeout=0.5)
