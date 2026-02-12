@@ -31,8 +31,7 @@ LCD_BAUDRATE = 115200                                                   # baud r
 
 MODEL_PATH = f"models/csi_hr_best_{SEGMENTATION_WINDOW_LENGTH}.tflite"  # path of the model to be loaded
 
-
-MAX_QUEUE_LENGTH = 200
+MIN_SAMPLES_FOR_PROCESSING = 10
 
 def safe_put(q, item):
     try:
@@ -47,7 +46,7 @@ def safe_put(q, item):
 def get_all(q):
     """Ritorna tutti gli elementi presenti nella coda al momento della chiamata."""
     items = []
-    while len(items) < 20:
+    while len(items) < MIN_SAMPLES_FOR_PROCESSING:
         try:
             items.append(q.get())
         except:
