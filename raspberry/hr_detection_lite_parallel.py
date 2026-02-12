@@ -84,7 +84,7 @@ def csi_read_process(port, q_out, stop_event):
             print("no string from csi port")
             continue
         strings = strings.lstrip('b\'').rstrip('\\r\\n\'')
-        # print(strings)
+        print(strings)
 
         # enqueue string
         try:
