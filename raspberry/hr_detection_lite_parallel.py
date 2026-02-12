@@ -44,7 +44,7 @@ def safe_put(q, item):
 def get_all(q):
     """Ritorna tutti gli elementi presenti nella coda al momento della chiamata."""
     items = []
-    while not q.empty():
+    while len(items) < 20:
         try:
             items.append(q.get(timeout=0.5))
         except:
