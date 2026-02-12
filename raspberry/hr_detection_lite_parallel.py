@@ -36,7 +36,7 @@ def safe_put(q, item):
     """Inserisce item nella coda. Se la coda è piena, rimuove il più vecchio."""
     if q.qsize() >= MAX_QUEUE_LENGTH:
         try:
-            q.get_nowait()  # rimuove il più vecchio
+            q.get(timeout=0.5)
         except:
             pass
     q.put(item)
@@ -46,7 +46,7 @@ def get_all(q):
     items = []
     while not q.empty():
         try:
-            items.append(q.get_nowait())
+            items.append(q.get(timeout=0.5))
         except:
             break  # in caso qualcuno abbia preso l'elemento prima
     return items
