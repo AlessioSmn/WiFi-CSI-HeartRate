@@ -94,9 +94,9 @@ def extract_features(df, csi_data_length, sampling_frequency, window_length):
         window_shape=(window_length, n_subcarriers)
     )[:, 0, :, :]
 
-    mean = X.mean(axis=1, keepdims=True)
-    std = X.std(axis=1, keepdims=True) + 1e-6
-    X = ((X - mean) / std).astype(np.float32)
+    #mean = X.mean(axis=1, keepdims=True)
+    #std = X.std(axis=1, keepdims=True) + 1e-6
+    #X = ((X - mean) / std).astype(np.float32)
 
     del A_smooth
     gc.collect()
