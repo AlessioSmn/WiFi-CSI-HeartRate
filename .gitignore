@@ -16,4 +16,7 @@
 ./img/*
 
 # ESP build folders
-./esp/**/build/
+esp/esp_csi_send/build/*
+esp/esp_csi_recv/build/*
+
+.vscode/settings.json

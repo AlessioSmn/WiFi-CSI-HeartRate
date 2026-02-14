@@ -1,10 +1,14 @@
 #region ======= Imports =======
+import os
+import time
 from collections import deque
 from multiprocessing import Process, Manager, Condition, Queue
 
 from mpque import MPDeque
 from csisource import csi_data_source_init, get_csi_data, csi_data_source_close
-from dsp import parse_csi_amplitudes, resample_window, PROC_DSP
+#from pca import parse_csi_amplitudes, resample_window, PROC_DSP
+#from wicg import parse_csi_complex, resample_window_complex, PROC_DSP
+from dsptest4 import PROC_DSP, parse_csi_complex, resample_window_complex, process_pipeline_amplitude, process_pipeline_phase, butter_bandpass_filter, extract_heart_rate_fft,select_best_subcarriers, sanitize_phase
 from hrui import PROC_UI
 from log import print_log, set_print_level, LVL_DBG, LVL_INF, LVL_ERR, DebugLevel
 #endregion ======= Imports =======
@@ -55,14 +59,16 @@ def monitor_hr(
     #region ======= Parameters =======
 
     # Sampling frequency
-    sampling_freq = 40 # Hertz
+    sampling_freq = 20 # Hertz
 
     # Csi data window lemgth
-    window_len = 500 # TODO tuning
+    window_len = 200 # TODO tuning
+    # Window too long: HR could not be constant, hence peak detection wouldn't work
+    # Window too short: bucket too little, BUT we can interpolate with additional 0
 
     # Samples taken between two estimates
     # If equal to sampling frequency it means an estimate per second
-    iter_per_estimate = 40 
+    iter_per_estimate = 10 
     
     #endregion
     
@@ -95,7 +101,7 @@ def monitor_hr(
     )
     PROC_dsp.start()
     child_processes.append(PROC_dsp)
-    print_log_loc("Process DSP started", LVL_INF)
+    print_log_loc(f"Process DSP started (PID = {PROC_dsp.pid})", LVL_INF)
 
     # === Process UI (display results)
 
@@ -115,7 +121,7 @@ def monitor_hr(
         )
         PROC_ui.start()
         child_processes.append(PROC_ui)
-        print_log_loc("Process UI started", LVL_INF)
+        print_log_loc(f"Process UI started (PID = {PROC_ui.pid})", LVL_INF)
 
     #endregion
     
@@ -130,8 +136,11 @@ def monitor_hr(
     # Id of last received sample
     _last_id = -1
 
+    TMP_WAIT_FOR_HR = False
+
     csi_data_source_init(port=port, from_ser=from_serial)
 
+    print_log_loc(f"Main process (PID = {os.getpid()})", LVL_INF)
     print_log_loc("Application started, use CTRL+C to stop", LVL_INF)
 
     try:
@@ -140,15 +149,22 @@ def monitor_hr(
             #region ======= Estimates retrieval =======
 
             try:
-                hr_hz = mpdeque_hr.popright(block=False)
+                if TMP_WAIT_FOR_HR:
+                    #print("Waiting for HR estimate")
+                    hr_hz = mpdeque_hr.popright(block=True)
+                    TMP_WAIT_FOR_HR = False
+                    #print("HR received")
+                else:
+                    hr_hz = mpdeque_hr.popright(block=False)
                 
                 # Convert to BPM
                 hr_bpm = Hz_to_BPM(hr_hz)
                 
-                print_log_loc(f"(main loop) - Heart rate estimated: {hr_bpm:.2f} BPM ({hr_hz:.3f} Hz)", LVL_INF)
+                print_log_loc(f"Heart rate estimated: {hr_bpm:.2f} BPM ({hr_hz:.3f} Hz)", LVL_INF)
                 
                 # Put in queue (in BPM)
-                mpdeque_ui.appendleft(Hz_to_BPM(hr_hz))
+                if start_ui_proc:
+                    mpdeque_ui.appendleft(Hz_to_BPM(hr_hz))
             
             except IndexError:
                 pass
@@ -161,42 +177,50 @@ def monitor_hr(
 
                 # Track missimg samples (for debugging)
                 if _last_id != -1 and _last_id != (int(csi_data[1]) - 1):
-                    print_log_loc(f"(main loop) - csi sample missing (ID={_last_id+1})", LVL_DBG)
+                    print_log_loc(f"Csi sample missing (ID={_last_id+1})", LVL_DBG)
                 _last_id = int(csi_data[1])
 
                 # Ensure message length is recognized (among two standards)
                 if len(csi_data) != len(DATA_COLUMNS_NAMES) and len(csi_data) != len(DATA_COLUMNS_NAMES_C5C6):
-                    print_log_loc(f"(main loop) - Message length is not recognized: Len is = {len(csi_data)}, can be {len(DATA_COLUMNS_NAMES) } or {len(DATA_COLUMNS_NAMES_C5C6)}", LVL_ERR)
+                    print_log_loc(f"Message length is not recognized: Len is = {len(csi_data)}, can be {len(DATA_COLUMNS_NAMES) } or {len(DATA_COLUMNS_NAMES_C5C6)}", LVL_ERR)
                     continue
-                print_log_loc("(main loop) - correct message length", LVL_DBG)
+                print_log_loc("Correct message length", LVL_DBG)
 
                 # Ensure correct length
                 if int(csi_data[-3]) != len(csi_data[-1]):
-                    print_log_loc(f"(main loop) - Data length does not coincide: Len is = {len(csi_data[-1])}, advertised as {int(csi_data[-3])}", LVL_ERR)
+                    print_log_loc(f"Data length does not coincide: Len is = {len(csi_data[-1])}, advertised as {int(csi_data[-3])}", LVL_ERR)
                     continue
-            
-                print_log_loc("(main loop) - correct data length", LVL_DBG)
+                print_log_loc(f"Correct data length ({len(csi_data[-1])})", LVL_DBG)
 
                 # Calculate amplitudes
-                amplitudes = parse_csi_amplitudes(csi_data[24])
-                print_log_loc("(main loop) - amplitudes calculated", LVL_DBG)
-
+                #amplitudes = parse_csi_amplitudes(csi_data[24])
+                csi_complex = parse_csi_complex(csi_data[-1])
+                
                 # Add to array
                 msg_id = int(csi_data[1])
-                csi_data_window_counters.append((msg_id, amplitudes))
-                print_log_loc("(main loop) - amplitudes appended list", LVL_DBG)
+                # csi_data_window_counters.append((msg_id, amplitudes))
+                csi_data_window_counters.append((msg_id, csi_complex))
+                print_log_loc("Amplitudes calculated", LVL_DBG)
 
                 # If sufficient iteration reached, process the current matrix
                 if iter >= iter_per_estimate:
-
-                    if window_len > len(csi_data_window_counters):
-                        continue
-
-                    cdw_resampled = resample_window(csi_data_window_counters)
-                    mpdeque_dsp.appendleft(cdw_resampled)
                     
                     # Reset iteration counter
                     iter = 0
+
+                    # # Uncomment this to start estimating only with the full window
+                    # # Estimating without full window will may give non accurate data
+                    if window_len > len(csi_data_window_counters):
+                        continue
+
+                    # Account for possible missing samples
+                    # cdw_resampled = resample_window(csi_data_window_counters)
+                    cdw_resampled = resample_window_complex(csi_data_window_counters)
+
+                    # Enqueue for processing
+                    mpdeque_dsp.appendleft(cdw_resampled)
+                    
+                    # TMP_WAIT_FOR_HR = True
 
                 else:
                     iter += 1
@@ -205,7 +229,7 @@ def monitor_hr(
                 if ve.args[0] == -3:
                     print_log_loc(f"Error in getting csi data: empty line", LVL_ERR)
 
-                elif ve.args[0] == -2: # initial lines, system infp
+                elif ve.args[0] == -2: # initial lines, system info
                     pass
 
                 else:

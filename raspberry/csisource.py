@@ -1,6 +1,7 @@
 #region ======= Imports =======
 
 import ast
+import csv
 import serial
 import time
 from io import StringIO
@@ -63,13 +64,29 @@ def csi_data_source_init(port, from_ser: bool = True):
         
     else:
         with open(port, "r", newline="") as f:
+            counter = 1
             for line in f:
+                line = line.rstrip("\n")
+
+                reader = csv.reader(StringIO(line))
+                fields = next(reader)
+
+                if fields[0] != "CSI_DATA":
+                    csi_raw = fields[1]
+                    headers = f'CSI_DATA,{counter},1a:00:00:00:00:00,-64,11,1,0,1,1,1,0,0,0,0,-96,0,11,2,30846,0,47,0,384,1,'
+                    data = f'"{csi_raw}"'
+                    line = f"{headers}{data}\n"
+                    counter+=1
                 PAR_CSV_ARRAY.append(line.rstrip("\n"))
 
             PAR_CSV_LEN = len(PAR_CSV_ARRAY)
             PAR_CSV_INDEX = 0
                 
             print_log_loc(f"CSV lines read: {PAR_CSV_LEN}", LVL_DBG)
+            # print(f"CSV lines read: {PAR_CSV_LEN}")
+            #print(PAR_CSV_ARRAY[0])
+            #print(PAR_CSV_ARRAY[1])
+            #print(PAR_CSV_ARRAY[2])
 
 def csi_data_source_close():
     """
@@ -104,17 +121,19 @@ def get_csi_data():
 
     if PAR_SOURCE_SERIAL:
         # read line from serial
-        line = PAR_SER_CONN.readline().decode("utf-8", errors="ignore").strip()
+        #line = PAR_SER_CONN.readline().decode("utf-8", errors="ignore").strip()
+        line = PAR_SER_CONN.readline().decode().strip()
     else:
         line = PAR_CSV_ARRAY[PAR_CSV_INDEX]
         PAR_CSV_INDEX += 1
 
         # samplig frequency: 40Hz -> 0.025 sec
         # to emulate real timings
-        time.sleep(0.025)
+        # time.sleep(1.025)
     
     # Empty line usually means the transmitter is not alive
     if not line:
+        print(f"DEBUG PRINT LINE: {line}")
         raise ValueError(-3)
     
     # Line without "CSI_DATA" is usually initial information from ESP
@@ -123,18 +142,19 @@ def get_csi_data():
         raise ValueError(-2)
 
     # Split line into Header fields and CSI data array
-    head, tail = line.rsplit(',"', 1)
-    fields = head.split(',')
+    headers, data_arr = line.rsplit(',"', 1)
+    header_fields = headers.split(',')
 
     try:
         # Convert CSI data string into list
-        data_arr = ast.literal_eval(tail[:-1])
+        data_arr = ast.literal_eval(data_arr[:-1])
     except SyntaxError:
-        return fields # without data
+        print(data_arr[:-1])
+        return header_fields # without data
     
     # Append the parsed CSI array to the CSV fields
-    fields.append(data_arr)
+    header_fields.append(data_arr)
 
-    return fields
+    return header_fields
 
 #endregion
