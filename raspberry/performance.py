@@ -270,8 +270,7 @@ def main():
     except KeyboardInterrupt:
         print("Closing...")
         stop_event.set()
-        for p in processes:
-            p.terminate()
+        
 
 
 if __name__ == "__main__":
