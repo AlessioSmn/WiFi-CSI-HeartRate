@@ -89,14 +89,10 @@ def csi_read_process(port, q_out, stop_event):
         if not strings:
             continue
         strings = strings.lstrip('b\'').rstrip('\\r\\n\'')
-        t0 = time.perf_counter()
         try:
             safe_put(q_out, strings)
         except:
             pass
-        times.append(time.perf_counter() - t0)
-
-        report(times, "csi_read_process")
 
     try:
         ser.write(b"STOP\n")
