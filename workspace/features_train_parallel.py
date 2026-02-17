@@ -9,34 +9,31 @@ from scipy.signal import butter, filtfilt, savgol_filter
 
 import tensorflow as tf
 from tensorflow import keras
-from tensorflow.keras.callbacks import ModelCheckpoint
-from tensorflow.keras.losses import Huber
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping # type: ignore
 
 # =======================
 # CONFIG
 # =======================
 
-RAW_DATA_PATH = "data/raw_data.csv"
+RAW_DATA_PATH = "data/raw_data.csv"                     # dataset path
 
-CSI_DATA_LENGTH = 384          # 192 subcarrier × I/Q
-N_SUB = CSI_DATA_LENGTH // 2
+CSI_DATA_LENGTH = 384                                   # 192 subcarrier × I/Q
+N_SUB = CSI_DATA_LENGTH // 2                            # subcarriers
 
-SAMPLING_FREQUENCY = 20        # Hz
-WINDOW_LENGTH = 100            # samples
-LEARNING_RATE = 0.001          #1e-4
-MSE_THRESHOLD = 0.01
-VALIDATION_SPLIT = 0.4
+SAMPLING_FREQUENCY = 20                                 # sampling frequency (Hz)
+WINDOW_LENGTH = 100                                     # amount of samples per window
+LEARNING_RATE = 0.001                                   # learning rate of the lstm model
+VAL_THRESHOLD = 0.01                                    # threshold for the early stopping for the validation metric                  
+VALIDATION_SPLIT = 0.4                                  # fraction of data to be used for the validation
 
-SAVE_TRAIN_DATA = False
+MODEL_PATH = f"models/csi_hr_{WINDOW_LENGTH}.keras"     # where to save the model
+CONTINUE_MODEL = None                                   # path of the model to use for the training continuation
+BATCH_SIZE = 64                                         # batch size for the training
+TRAIN_FOR_TFLITE = True                                 # compile the model to be compatible with tflite
 
-MODEL_PATH = f"models/csi_hr_{WINDOW_LENGTH}.keras"
-CONTINUE_MODEL = None
-BATCH_SIZE = 64
-TRAIN_FOR_TFLITE = True
-
-USE_CHUNKING = True
-N_CHUNKS = 20
-DO_BALANCING = False
+USE_CHUNKING = True                                     # balance the distribution of the training and validation set via chunking
+N_CHUNKS = 20                                           # how many chunks should be created and distributed between the two datasets
+DO_BALANCING = False                                    # balance the weights according to the training distribution
 
 # =======================
 # TF GPU SAFE CONFIG
@@ -53,13 +50,14 @@ if gpus:
 
 def iq_to_complex_matrix(csi_raw_series):
     """
-    csi_raw_series: iterable di liste lunghezza 384
-    restituisce: ndarray (T, 192) complesso64
+    convert the csi array to the array of I/Q components of each subcarrier
+    csi_raw_series: iterable containing the csi array
+    returns: ndarray (T, 192) complex64
     """
     valid_rows = []
     for i, row in enumerate(csi_raw_series):
-        # controlla che sia lista e abbia lunghezza esatta
-        if isinstance(row, list) and len(row) == 384:
+        # check the type and length
+        if isinstance(row, list) and len(row) == CSI_DATA_LENGTH:
             valid_rows.append(np.array(row, dtype=np.float32))
         else:
             print(f"Riga {i} scartata, lunghezza={len(row) if isinstance(row, list) else type(row)}")
@@ -70,7 +68,6 @@ def iq_to_complex_matrix(csi_raw_series):
     # forma (T, 384)
     csi = np.stack(valid_rows, axis=0)
 
-    # separa I/Q in complessi
     I = csi[:, 0::2]
     Q = csi[:, 1::2]
     return I + 1j * Q
@@ -89,8 +86,9 @@ def butter_bandpass_filter(x, fs, lowcut=0.8, highcut=2.17, order=3):
 
 def extract_features(df):
     """
+    Compute X and y for the given dataframe
     Return:
-        X: (N, W, 192) float32
+        X: (N, W, N_SUBCARRIERS) float32
         y: (N,) float32 or None
     """
 
@@ -100,7 +98,7 @@ def extract_features(df):
     cols = ["csi_raw", "AVG BPM"]
     df = df[cols].dropna()
 
-    # tieni solo CSI della lunghezza giusta (384)
+    # drop csi arrays of the wrong length
     df = df[df["csi_raw"].apply(lambda x: isinstance(x, list) and len(x) == CSI_DATA_LENGTH)]
 
     if len(df) < WINDOW_LENGTH:
@@ -192,21 +190,19 @@ def extract_features(df):
     return X, y
 
 
-import numpy as np
-
-
 def extract_features_with_stratified_chunks(df, chunk_size, train_ratio=0.8):
     """
-    df: DataFrame originale
-    chunk_size: lunghezza dei chunk (>= 5-10 x WINDOW_LENGTH)
-    train_ratio: percentuale di chunk per train
+    Create the training and validation datasets by balancing the distributions using different chunks
+    df: raw dataframe
+    chunk_size: rows per chunk
+    train_ratio: fraction of data for the training phase
 
-    Ritorna:
+    Returns:
         X_train, y_train, X_val, y_val
     """
 
     # -----------------------
-    # DIVIDI IN CHUNK CONTIGUI
+    # DIVIDE IN CONTIGUOUS CHUNKS
     # -----------------------
     chunks = []
     for i in range(0, len(df), chunk_size):
@@ -215,7 +211,7 @@ def extract_features_with_stratified_chunks(df, chunk_size, train_ratio=0.8):
             chunks.append(chunk)
 
     # -----------------------
-    # CALCOLA MEDIA TARGET PER OGNI CHUNK
+    # MEAN TARGET FOR EACH CHUNK
     # -----------------------
     chunk_stats = []
     for chunk in chunks:
@@ -223,7 +219,7 @@ def extract_features_with_stratified_chunks(df, chunk_size, train_ratio=0.8):
         chunk_stats.append((chunk, hr_mean))
 
     # -----------------------
-    # ORDINA CHUNK PER HR MEDIO
+    # SORT BY MEAN TARGET
     # -----------------------
     chunk_stats.sort(key=lambda x: x[1])
 
@@ -231,12 +227,10 @@ def extract_features_with_stratified_chunks(df, chunk_size, train_ratio=0.8):
     # ASSEGNA CHUNK A TRAIN/VAL IN MODO STRATIFICATO
     # -----------------------
     n_train = int(train_ratio * len(chunk_stats))
-
-    # Alternanza stratificata
     train_chunks = []
     val_chunks = []
 
-    # Distribuisci ciclicamente
+    # distribute chunks
     for i, (chunk, _) in enumerate(chunk_stats):
         if i % int(1 / (1 - train_ratio)) == 0:
             val_chunks.append(chunk)
@@ -244,7 +238,7 @@ def extract_features_with_stratified_chunks(df, chunk_size, train_ratio=0.8):
             train_chunks.append(chunk)
 
     # -----------------------
-    # ESTRAI FINETRE PER OGNI CHUNK
+    # COMPUTE WINDOWS FOR EACH CHUNK
     # -----------------------
     def process_chunks(chunk_list):
         X_list, y_list = [], []
@@ -262,6 +256,7 @@ def extract_features_with_stratified_chunks(df, chunk_size, train_ratio=0.8):
     X_train, y_train = process_chunks(train_chunks)
     X_val, y_val = process_chunks(val_chunks)
 
+    # check the distribution of the datasets
     print("---------- DATASETS DISTRIBUTION ----------")
     print("train:")
     print(y_train.mean(), y_train.std())
@@ -277,11 +272,10 @@ def extract_features_with_stratified_chunks(df, chunk_size, train_ratio=0.8):
 
 if __name__ == "__main__":
 
+    # load raw data
     print("Loading CSV...")
     df = pd.read_csv(RAW_DATA_PATH)
     df["csi_raw"] = df["csi_raw"].apply(ast.literal_eval)
-
-    print(f"Initial dataset length: {len(df)}")
 
     print("Extracting features...")
     if USE_CHUNKING:
@@ -301,10 +295,8 @@ if __name__ == "__main__":
     print("Estimated size (GB):", X_train.nbytes / 1e9)
 
 
-
-
     # =======================
-    # MODEL
+    # BUILD MODEL
     # =======================
     inputs = keras.Input(shape=(WINDOW_LENGTH, N_SUB))
     if not TRAIN_FOR_TFLITE:
@@ -338,6 +330,7 @@ if __name__ == "__main__":
     # TRAINING
     # =======================
 
+    # save best model during training
     checkpoint = ModelCheckpoint(
         filepath=f"models/csi_hr_best_{WINDOW_LENGTH}.keras",
         monitor="val_loss",
@@ -345,21 +338,21 @@ if __name__ == "__main__":
         verbose=1
     )
 
-    from tensorflow.keras.callbacks import EarlyStopping
-
+    # stop if for 30 epoch no improvement is made
     early_stop = EarlyStopping(
         monitor='val_mae',  # la metrica che vuoi monitorare
         patience=30,  # quante epoche consecutive senza miglioramento
         restore_best_weights=True
     )
 
+    # stop if the validation metric threshold is reached
     class StopCallback(keras.callbacks.Callback):
         def on_epoch_end(self, epoch, logs=None):
-            if logs and logs.get("val_loss", 1.0) <= MSE_THRESHOLD:
-                print("Reached MSE threshold. Stopping.")
+            if logs and logs.get("val_loss", 1.0) <= VAL_THRESHOLD:
+                print("Reached threshold. Stopping.")
                 self.model.stop_training = True
 
-
+    # compute at training time the rmse converted in BPM
     class RMSEBPMCallback(tf.keras.callbacks.Callback):
         def __init__(self, y_mean, y_std, X_val, y_val_norm):
             super().__init__()
@@ -369,20 +362,19 @@ if __name__ == "__main__":
             self.y_val_norm = y_val_norm
 
         def on_epoch_end(self, epoch, logs=None):
-            # predizione sul validation set
             y_pred_norm = self.model.predict(self.X_val, verbose=0)
-            # riportiamo a BPM reali
+            # BPM conversion
             y_pred_bpm = y_pred_norm * self.y_std + self.y_mean
             y_true_bpm = self.y_val_norm * self.y_std + self.y_mean
-            # RMSE in BPM
             rmse_bpm = np.sqrt(np.mean((y_pred_bpm - y_true_bpm) ** 2))
 
+            # pearson test
             from scipy.stats import pearsonr
             print(pearsonr(self.y_val_norm.squeeze(), y_pred_norm.squeeze()))
             print(f"Epoch {epoch + 1}: RMSE validation ≈ {rmse_bpm:.3f} BPM, \t mean: {self.y_mean:.3f} std: {self.y_std:.3f}")
 
 
-    # balancing
+    # balancing by weights
     weights = None
     if DO_BALANCING:
         hist, bin_edges = np.histogram(y_train, bins=20)
@@ -397,6 +389,7 @@ if __name__ == "__main__":
 
     y_val_norm = (y_val - y_mean) / y_std
 
+    # training
     model.fit(
         X_train, y_norm,
         validation_data=(X_val, y_val_norm),
@@ -408,5 +401,6 @@ if __name__ == "__main__":
         verbose=2
     )
 
+    # save final model
     model.save(MODEL_PATH)
     print("Training complete.")
