@@ -31,7 +31,7 @@ LCD_BAUDRATE = 115200                                                   # baud r
 
 MODEL_PATH = f"models/csi_hr_best_{SEGMENTATION_WINDOW_LENGTH}.tflite"  # path of the model to be loaded
 
-MIN_SAMPLES_FOR_PROCESSING = 10                                         # how many new samples must be received before a prediction
+MIN_SAMPLES_FOR_PROCESSING = 20                                         # how many new samples must be received before a prediction
 SCALING_MEAN = 77.683                                                   # y_mean computed at training time
 SCALING_STD = 14.341                                                    # y_std computed at training time
 
