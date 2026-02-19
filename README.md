@@ -61,6 +61,7 @@ pip install tflite-runtime==2.14.0
 ```
 
 ## Deployment
+After the conversion of the model to .tflite, move the model from workspace/models to raspberry/models.
 ### Raspberry
 ```bash
 python hr_detection_lite_parallel.py -p /dev/ttyUSB0 -ps /dev/ttyACM0
